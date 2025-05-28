@@ -15,7 +15,7 @@ from scipy.ndimage import gaussian_filter
 from shapely.geometry import LineString, Point
 
 from sarenv import Logging, Utils
-from sarenv.Geometries import GeoMultiPolygon, GeoMultiTrajectory, GeoPolygon, GeoPoint
+from sarenv.core.geometries import GeoMultiPolygon, GeoMultiTrajectory, GeoPolygon, GeoPoint
 from sarenv.Query import query_features
 
 log = Logging.get_logger()
@@ -24,6 +24,8 @@ from collections import defaultdict
 import cv2
 from shapely import is_empty, plotting as shplt
 from skimage.draw import polygon as ski_polygon
+import geopandas as gpd
+from shapely.geometry import mapping
 
 
 class EnvironmentBuilder:
@@ -115,36 +117,30 @@ class Environment:
         # print(f"Size of y edges: {len(self.yedges)}")
 
         def process_feature(key):
-            feature = query_features(
+            features = query_features(
                 GeoPolygon(query_region),
                 tags[key],
             )
 
-            if feature is None:
+            if features is None:
                     return key, None
-
+            
             feature_collection = []
-            for feature in feature.values():
+            for tag, feature in features.items():
                 if hasattr(feature, "geoms"):
                     feature_collection.extend(geom for geom in feature.geoms if geom is not None)
                 elif isinstance(feature, shapely.geometry.base.BaseGeometry):
                     feature_collection.append(feature)
                 else:
-                    log.warning("Feature does not have 'geoms' attribute: %s", feature)
-            if all(
-                isinstance(geom, shapely.geometry.Polygon)
-                for geom in feature_collection
-            ):
-                feature_geom = GeoMultiPolygon(feature_collection).set_crs("EPSG:2197")
-            elif all(isinstance(geom, LineString) for geom in feature_collection):
-                feature_geom = GeoMultiTrajectory(feature_collection).set_crs(
-                    "EPSG:2197"
-                )
-            elif all(isinstance(geom, Point) for geom in feature_collection):
-                # feature_geom = GeoMultiTrajectory(feature_collection).set_crs("EPSG:2197")
-                return key, None # TODO Fix this, it should not generate a heatmap for the multi-line but rather at the points itself
-            else:
-                raise ValueError("Invalid feature type in feature collection")
+                    log.warning("No feature found with the tag: %s in the query region", tag)
+            # Create a GeoDataFrame from the feature_collection
+            gdf = gpd.GeoDataFrame(geometry=feature_collection, crs="WGS84")
+
+            # Convert the GeoDataFrame to EPSG:2197
+            gdf = gdf.to_crs("EPSG:2197")
+
+            feature_geom = gdf
+                # raise ValueError("Invalid feature type in feature collection")
             # start_time = time.time()
             # heatmap = self.generate_heatmap(feature_geom.geometry, self.sample_distance)
             # end_time = time.time()
@@ -194,24 +190,22 @@ class Environment:
         
     # # Apply the heatmap generation to all road lines
     def generate_heatmap(
-        self, geometry_collection, sample_distance, infill_geometries=True
+        self, geometry_gdf:gpd, sample_distance, infill_geometries=True
     ):
         heatmap = np.zeros((len(self.xedges) - 1, len(self.yedges) - 1))
-        for feature in geometry_collection.geoms:
+        for geometry in geometry_gdf:
             interpolated_points = []
-            if isinstance(feature, LineString):
-                line = feature
-                interpolated_points = self.interpolate_line(line, sample_distance)
-            elif isinstance(feature, shapely.geometry.Polygon):
+            if isinstance(geometry, LineString):
+                interpolated_points = self.interpolate_line(geometry, sample_distance)
+            elif isinstance(geometry, shapely.geometry.Polygon):
                 if infill_geometries:
-                    poly_coordinates = np.array(list(feature.exterior.coords))
+                    poly_coordinates = np.array(list(geometry.exterior.coords))
                     rr, cc = ski_polygon(poly_coordinates[:, 0], poly_coordinates[:, 1])
                     interpolated_points.extend(
                         [shapely.geometry.Point(x, y) for x, y in zip(rr, cc)]
                     )
                 else:
-                    line = feature.exterior
-                    interpolated_points = self.interpolate_line(line, sample_distance)
+                    interpolated_points = self.interpolate_line(geometry.exterior, sample_distance)
 
             # No intersection between the points and the polygon/line
             if not interpolated_points:
@@ -232,15 +226,13 @@ class Environment:
             sigma_features = {key: 1 for key in self.tags.keys()}
         if alpha_features is None:
             alpha_features = {key: 1 for key in self.tags.keys()}
-
         heatmap = np.zeros((len(self.xedges) - 1, len(self.yedges) - 1))
-        for key in self.heatmaps.keys():
+        for key in self.heatmaps:
             if self.heatmaps[key] is None:
                 continue
             heatmap += gaussian_filter(
                 (self.heatmaps[key]) * alpha_features.get(key, 1), sigma=sigma_features.get(key, 1)
             )
-
         return heatmap
 
     def binary_cut(self, lines, max_length):
@@ -533,7 +525,7 @@ class Environment:
 
         # Plot each feature with its corresponding color
         for feature_type, feature in self.features.items():
-            if feature is not None and not feature.geometry.is_empty:
+            if feature is not None and not feature.empty:
                 color = color_mapping.get(feature_type, "black")
                 feature.plot(ax=ax, label=feature_type.capitalize(), color=color, alpha=0.5)
 
@@ -542,7 +534,7 @@ class Environment:
         # Create legend
         legend_handles = []
         for feature_type, feature in self.features.items():
-            if feature is not None and not feature.geometry.is_empty:
+            if feature is not None and not feature.empty:
                 legend_handles.append(
                     Patch(
                         facecolor=color_mapping.get(feature_type, "black"),
@@ -623,7 +615,7 @@ class Environment:
         if use_sliders:
             filter_sliders = {}
             multiplier_sliders = {}
-            for key in self.heatmaps.keys():
+            for key in self.heatmaps:
                 y_position = 0 + 0.05 * list(self.heatmaps.keys()).index(key)
 
                 ax_filter_slider = plt.axes([0.25, y_position, 0.25, 0.03])

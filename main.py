@@ -36,12 +36,11 @@ for feature, tags in tags_mapping.items():
 env = builder.set_polygon_file("FlatTerrainNature.geojson").build()
 
 env.visualise_environment()
-
 heatmap = env.get_combined_heatmap()
 
 env.plot_heatmap(
     heatmap,
-    use_sliders=False,
+    use_sliders=True,
     show_basemap=True,
     show_features=False,
     show_heatmap=True,

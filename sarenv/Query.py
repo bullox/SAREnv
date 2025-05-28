@@ -5,7 +5,7 @@ import shapely
 from geojson import Feature, FeatureCollection, dump
 
 from sarenv import Logging
-from sarenv.Geometries import GeoPolygon
+from sarenv.core.geometries import GeoPolygon
 
 log = Logging.get_logger()
 
@@ -19,13 +19,12 @@ def query_features(area: GeoPolygon, tags: dict):
     try:
         geometries = ox.features_from_polygon(area.get_geometry(), tags=tags)
     except Exception as e:
+        log.warning("An error occurred while querying features: %s", str(e))
         return None
+    
     results = {tag: [] for tag in tags}
-    # Iterate through the features and populate the results dictionary
     for tag in tags:
-        # Check if the tag exists in the GeoDataFrame
         if tag in geometries.columns:
-            # Filter the GeoDataFrame by the specified tag
             filtered_features = geometries[geometries[tag].notna()]
             results[tag] = shapely.intersection(
                 area.get_geometry(), filtered_features.geometry.unary_union
