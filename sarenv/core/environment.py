@@ -1,44 +1,47 @@
 # sarenv/core/environment.py
 import concurrent.futures
 import json
+import os
 import time
 from collections import defaultdict
 
 import contextily as cx
+import cv2  # Ensure opencv-python is in requirements.txt
+import geopandas as gpd  # Ensure geopandas is in requirements.txt
 import matplotlib.pyplot as plt
 import numpy as np
-# from scipy.__config__ import show # This import seems unused and specific to scipy source
+import pandas as pd
 import shapely
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Patch
 from matplotlib.widgets import Slider
-from PIL import Image # Ensure Pillow is in requirements.txt
 from scipy.ndimage import gaussian_filter
-from shapely.geometry import LineString, Point, mapping
-import geopandas as gpd # Ensure geopandas is in requirements.txt
-import cv2 # Ensure opencv-python is in requirements.txt
-from shapely import is_empty, plotting as shplt
-from skimage.draw import polygon as ski_polygon # Ensure scikit-image is in requirements.txt
+from shapely.geometry import LineString, Point
+from skimage.draw import (
+    polygon as ski_polygon,
+)
 
-# Relative imports for modules within the same package
-from ..utils import logging_setup # Assuming get_logger is exposed in logging_setup.__init__ or directly
-from ..utils import plot_utils # Assuming plot_basemap is exposed here
-from .geometries import GeoMultiPolygon, GeoMultiTrajectory, GeoPolygon, GeoPoint
-from ..io.osm_query import query_features # Corrected path
+from ..io.osm_query import query_features
+from ..utils import (
+    logging_setup,
+    plot_utils,
+)
+from .geometries import GeoMultiTrajectory, GeoPolygon
 
 log = logging_setup.get_logger()
-
+EPS = 1e-9
 
 class EnvironmentBuilder:
     def __init__(self):
-        self.polygon_file = None
-        self.sample_distance = 1
+        self.polygon = None
         self.meter_per_bin = 3
-        self.buffer = 0 # Default buffer, renamed to self.buffer_val in Environment
+        self.sample_distance = 1
+        self.buffer = 0
         self.tags = {}
+        self.projected_crs = None # Add projected_crs attribute
 
-    def set_polygon_file(self, polygon_file):
-        self.polygon_file = polygon_file
+    def set_polygon(self, polygon):
+        self.polygon = polygon
         return self
 
     def set_sample_distance(self, sample_distance):
@@ -49,11 +52,15 @@ class EnvironmentBuilder:
         self.meter_per_bin = meter_per_bin
         return self
 
-    def set_buffer(self, buffer_val): # Consistent naming
+    def set_projected_crs(self, crs: str):
+        self.projected_crs = crs
+        return self
+
+    def set_buffer(self, buffer_val):
         self.buffer = buffer_val
         return self
 
-    def set_features(self, features): # Renamed for consistency
+    def set_features(self, features):
         if not isinstance(features, dict):
             raise ValueError("Features must be a dictionary")
         self.tags.update(features)
@@ -64,16 +71,19 @@ class EnvironmentBuilder:
         return self
 
     def build(self):
-        if self.polygon_file is None:
-            raise ValueError("Polygon file must be set before building the environment.")
+        if self.polygon is None:
+            raise ValueError("Polygon must be set before building the environment.")
+        if self.projected_crs is None:
+            raise ValueError("Projected CRS must be set before building.")
+
         return Environment(
-            self.polygon_file,
+            self.polygon,
             self.sample_distance,
             self.meter_per_bin,
-            self.buffer, # Pass the stored buffer value
+            self.buffer,
             self.tags,
+            self.projected_crs, # Pass the CRS
         )
-
 # Corrected global helper function
 def world_to_image(x, y, meters_per_bin, minx, miny, buffer_val):
     # x and y can be NumPy arrays
@@ -93,29 +103,22 @@ def image_to_world(x_img, y_img, meters_per_bin, minx, miny, buffer_val):
 
 
 class Environment:
-    def __init__(self, polygon_file, sample_distance, meter_per_bin, buffer_val, tags): # Renamed buffer to buffer_val
-        self.polygon_file = polygon_file
+    def __init__(self, bounding_polygon, sample_distance, meter_per_bin, buffer_val, tags, projected_crs):
         self.tags = tags
         self.sample_distance = sample_distance
         self.meter_per_bin = meter_per_bin
-        self.buffer_val = buffer_val # Renamed buffer
+        self.buffer_val = buffer_val
+        self.projected_crs = projected_crs # Store the projected CRS
+
         self.polygon: GeoPolygon | None = None
         self.xedges: np.ndarray | None = None
         self.yedges: np.ndarray | None = None
         self.heatmaps: dict[str, np.ndarray | None] = {}
-        self.features: dict[str, gpd.GeoDataFrame | None] = {} # Store features as GeoDataFrames
+        self.features: dict[str, gpd.GeoDataFrame | None] = {}
 
-        with open(self.polygon_file, "r") as f:
-            data = json.load(f)
-
-        boundary_coords_lon_lat = data["features"][0]["geometry"]["coordinates"][0]
-        query_region_wgs84 = shapely.Polygon(boundary_coords_lon_lat)
-        log.info("Query region bounds (WGS84): %s", query_region_wgs84.bounds)
-
-        self.polygon = GeoPolygon(query_region_wgs84, crs="EPSG:4326")
-        self.polygon.set_crs("EPSG:2197") # Example projected CRS
+        self.polygon = GeoPolygon(bounding_polygon, crs="EPSG:4326") # make sure it is WGS84
+        self.polygon.set_crs(self.projected_crs) # Use the dynamically provided projected CRS
         log.info(f"Environment polygon CRS set to: {self.polygon.crs}")
-
 
         self.area = self.polygon.geometry.area
         log.info("Area of the polygon: %s m² (approx. %.2f km²)", self.area, self.area / 1e6)
@@ -141,11 +144,10 @@ class Environment:
 
     def _load_features(self):
         query_polygon_wgs84 = GeoPolygon(self.polygon.geometry, crs=self.polygon.crs)
-        query_polygon_wgs84.set_crs("EPSG:4326")
+        query_polygon_wgs84.set_crs("EPSG:4326")  # Ensure the query polygon is in WGS84
 
         def process_feature_osm(key_val_pair):
             key, tag_dict = key_val_pair
-            # Pass the GeoPolygon object directly
             osm_geometries_dict = query_features(query_polygon_wgs84, tag_dict)
 
 
@@ -153,9 +155,6 @@ class Environment:
                 log.warning(f"No geometries returned from OSM query for features: {key}")
                 return key, None # Return key and None for the GeoDataFrame
 
-            # Consolidate all geometries from the dict into a single list
-            # This assumes query_features returns a dict like {'osm_tag': geometry}
-            # and we want to union all of them for this 'key' (category).
             all_geoms_for_key = []
             for geom in osm_geometries_dict.values():
                 if geom is not None and not geom.is_empty:
@@ -163,7 +162,7 @@ class Environment:
                         all_geoms_for_key.extend(g for g in geom.geoms if g is not None and not g.is_empty)
                     else:
                         all_geoms_for_key.append(geom)
-            
+
             if not all_geoms_for_key:
                 log.info(f"No valid geometries found for feature type '{key}' after filtering empty ones.")
                 return key, None
@@ -206,15 +205,16 @@ class Environment:
         if distance <= 0:
             return [shapely.Point(line.coords[0]), shapely.Point(line.coords[-1])]
 
-        num_points = int(line.length / distance)
         points = []
-        if num_points > 0:
-            points = [
-                line.interpolate(float(i) / num_points, normalized=True)
-                for i in range(num_points + 1)
-            ]
-        else:
-            points = [shapely.Point(line.coords[0]), shapely.Point(line.coords[-1])]
+        for i in range(len(line.coords) - 1):
+            segment = LineString([line.coords[i], line.coords[i + 1]])
+            segment_length = segment.length
+            num_points = max(1, int(segment_length / distance))
+            points.extend(
+                segment.interpolate(float(j) / num_points * segment_length)
+                for j in range(num_points)
+            )
+        points.append(shapely.Point(line.coords[-1]))  # Ensure the last point is included
         return points
 
     def generate_heatmaps(self):
@@ -252,7 +252,6 @@ class Environment:
             if geometry is None or geometry.is_empty:
                 continue
 
-            # These will store scalar image coordinates for each point of a geometry
             current_geom_img_coords_x = []
             current_geom_img_coords_y = []
 
@@ -268,7 +267,6 @@ class Environment:
             elif isinstance(geometry, shapely.geometry.Polygon):
                 if infill_geometries:
                     ext_coords_world = np.array(list(geometry.exterior.coords))
-                    # self.world_to_image now returns arrays of ints
                     ext_coords_img_x_arr, ext_coords_img_y_arr = self.world_to_image(
                         ext_coords_world[:,0], ext_coords_world[:,1]
                     )
@@ -285,19 +283,21 @@ class Environment:
                         current_geom_img_coords_x.extend(img_x)
                         current_geom_img_coords_y.extend(img_y)
 
-                for interior in geometry.interiors: # Process interiors as outlines
-                    points_on_interior = self.interpolate_line(interior, sample_distance)
-                    if points_on_interior:
-                        world_x = [p.x for p in points_on_interior]
-                        world_y = [p.y for p in points_on_interior]
-                        img_x, img_y = self.world_to_image(np.array(world_x), np.array(world_y))
-                        current_geom_img_coords_x.extend(img_x)
-                        current_geom_img_coords_y.extend(img_y)
+                for interior in geometry.interiors:
+                    interior_coords_world = np.array(list(interior.coords))
+                    interior_coords_img_x, interior_coords_img_y = self.world_to_image(
+                        interior_coords_world[:, 0], interior_coords_world[:, 1]
+                    )
+                    for ix, iy in zip(interior_coords_img_x, interior_coords_img_y):
+                        if ix in current_geom_img_coords_x and iy in current_geom_img_coords_y:
+                            idx = current_geom_img_coords_x.index(ix)
+                            if current_geom_img_coords_y[idx] == iy:
+                                current_geom_img_coords_x.pop(idx)
+                                current_geom_img_coords_y.pop(idx)
             else:
                 log.warning(f"Unsupported geometry type for heatmap: {type(geometry)} for feature {feature_key}")
                 continue
-            
-            # Filter coordinates to be within heatmap bounds and update heatmap
+
             if current_geom_img_coords_x: # If any points were generated
                 valid_indices = [
                     i for i, (x, y) in enumerate(zip(current_geom_img_coords_x, current_geom_img_coords_y))
@@ -308,11 +308,6 @@ class Environment:
                     valid_y = np.array(current_geom_img_coords_y)[valid_indices]
                     heatmap[valid_y, valid_x] = 1 # Mark presence
 
-        # current_sum = np.sum(heatmap)
-        # if current_sum > 0:
-        #     heatmap /= current_sum
-        # else:
-        #     log.warning(f"Heatmap for {feature_key} is all zeros after processing; no normalization performed.")
         return heatmap
 
     def get_combined_heatmap(self, sigma_features=None, alpha_features=None):
@@ -331,14 +326,24 @@ class Environment:
             return None
 
         combined_heatmap = np.zeros((len(self.yedges) - 1, len(self.xedges) - 1), dtype=float)
-
-        default_sigma = sigma_features if isinstance(sigma_features, (int, float)) else 1.0
-        default_alpha = alpha_features if isinstance(alpha_features, (int, float)) else 1.0
-
+        if alpha_features is None:
+            alpha_features = {
+            "structure": 0.13,
+            "road": 0.13,
+            "linear": 0.25,
+            "drainage": 0.12,
+            "water": 0.08,
+            "brush": 0.02,
+            "scrub": 0.03,
+            "woodland": 0.07,
+            "field": 0.14,
+            "rock": 0.04,
+        }
+        default_sigma = sigma_features if isinstance(sigma_features, (int, float)) else 0
+        default_alpha = alpha_features if isinstance(alpha_features, (int, float)) else 0
 
         sigma_map = sigma_features if isinstance(sigma_features, dict) else {key: default_sigma for key in self.tags.keys()}
         alpha_map = alpha_features if isinstance(alpha_features, dict) else {key: default_alpha for key in self.tags.keys()}
-
 
         for key, individual_heatmap in self.heatmaps.items():
             if individual_heatmap is None:
@@ -361,7 +366,7 @@ class Environment:
 
     def binary_cut(self, lines: list[LineString], max_length: float) -> list[LineString]:
         result = []
-        processing_lines = list(lines) 
+        processing_lines = list(lines)
         while processing_lines:
             line = processing_lines.pop(0)
             if line.length > max_length:
@@ -374,34 +379,33 @@ class Environment:
 
     def modulus_cut(self, lines: list[LineString], max_length: float) -> list[LineString]:
         result = []
-        processing_lines = list(lines) 
+        processing_lines = list(lines)
         while processing_lines:
             line = processing_lines.pop(0)
             if line.length > max_length:
                 num_segments = int(np.ceil(line.length / max_length))
-                if num_segments <= 1: 
+                if num_segments <= 1:
                     if line and not line.is_empty: result.append(line)
                     continue
 
                 segment_length = line.length / num_segments
                 current_line = line
-                for _ in range(num_segments -1): 
+                for _ in range(num_segments -1):
                     part1, part2 = self.cut(current_line, segment_length)
                     if part1 and not part1.is_empty: result.append(part1)
                     current_line = part2
                     if not current_line or current_line.is_empty: break
-                if current_line and not current_line.is_empty: 
+                if current_line and not current_line.is_empty:
                     result.append(current_line)
             else:
                 if line and not line.is_empty: result.append(line)
         return result
 
-
     def cut(self, line: LineString, distance: float) -> tuple[LineString | None, LineString | None]:
         if not isinstance(line, LineString) or line.is_empty:
             return None, None
         if distance <= 1e-6 : # effectively zero or negative distance
-            return None, line 
+            return None, line
         if distance >= line.length - 1e-6: # distance is at or beyond the line length
             return line, None
 
@@ -417,21 +421,18 @@ class Environment:
                 # Cut point is on this segment
                 remaining_dist_on_segment = distance - current_dist_along_line
                 cut_point_geom = segment.interpolate(remaining_dist_on_segment)
-                
+
                 first_part_coords = coords[:i+1] + [(cut_point_geom.x, cut_point_geom.y)]
                 second_part_coords = [(cut_point_geom.x, cut_point_geom.y)] + coords[i+1:]
-                
+
                 line1 = LineString(first_part_coords) if len(first_part_coords) >= 2 else None
                 line2 = LineString(second_part_coords) if len(second_part_coords) >= 2 else None
                 return line1, line2
             current_dist_along_line += segment_len
         # Should be covered by distance checks at start, but as a fallback:
-        return line, None 
-
+        return line, None
 
     def shrink_polygon(self, p: shapely.Polygon | shapely.MultiPolygon, buffer_size: float) -> list[shapely.Polygon | shapely.MultiPolygon]:
-        # This method needs careful testing; recursive shrinking can be complex.
-        # Simplified version: returns only one level of shrinkage or original.
         if p.is_empty or buffer_size <=0:
             return [p] if not p.is_empty else []
 
@@ -439,12 +440,8 @@ class Environment:
 
         if shrunken_polygon.is_empty:
             return [p] # Cannot shrink, return original
-        
-        # For a more iterative approach, you might call this in a loop outside
-        # or make this function return a generator if deep recursion is desired.
-        # For now, let's return the original and the first valid shrink.
-        return [p, shrunken_polygon]
 
+        return [p, shrunken_polygon]
 
     def create_polygons_from_contours(self, contours: list[np.ndarray], hierarchy: np.ndarray, min_area_world: float) -> list[shapely.Polygon]:
         all_polygons = []
@@ -474,7 +471,6 @@ class Environment:
                 if len(cnt_ext_img) < 3: continue
                 exterior_coords_world = np.array([self.image_to_world(pt[0][0], pt[0][1]) for pt in cnt_ext_img])
                 holes_coords_world_list = parent_to_children_coords.get(i, [])
-                
                 try:
                     poly = shapely.Polygon(shell=exterior_coords_world, holes=holes_coords_world_list)
                     if not poly.is_valid: poly = poly.buffer(0) # Try to fix invalid geometry
@@ -483,7 +479,6 @@ class Environment:
                 except Exception as e:
                     log.error(f"Error creating polygon from contour {i} (world coords): {e}")
         return all_polygons
-
 
     def informative_coverage(
         self,
@@ -500,7 +495,7 @@ class Environment:
 
         mask = np.zeros_like(heatmap, dtype=np.uint8)
         mask[heatmap > contour_threshold] = 255
-        
+
         # findContours expects (image_height, image_width) or (rows, cols)
         # If heatmap is (y_bins, x_bins), it's correct.
         contours_img, hierarchy = cv2.findContours(
@@ -520,7 +515,7 @@ class Environment:
         coverage_rings_world = []
         for poly_world_initial in all_polygons_world:
             if poly_world_initial.is_empty: continue
-            
+
             poly_world = poly_world_initial
             if not poly_world.is_valid: poly_world = poly_world.buffer(0) # Attempt to fix
             if poly_world.is_empty or not poly_world.is_valid: continue
@@ -542,16 +537,16 @@ class Environment:
                 while current_poly_to_shrink and not current_poly_to_shrink.is_empty and current_poly_to_shrink.area > min_contour_area_world / 2:
                     if current_poly_to_shrink.exterior and current_poly_to_shrink.exterior.length > EPS:
                         coverage_rings_world.append(LineString(current_poly_to_shrink.exterior.coords)) # Ensure it's a LineString copy
-                    
-                    next_shrunk = current_poly_to_shrink.buffer(-sensor_radius_world * 2.0, join_style="mitre")
+
+                    next_shrunk = current_poly_to_shrink.buffer(-sensor_radius_world * 2.0, join_style="round")
                     if next_shrunk.is_empty or not next_shrunk.is_valid:
                         # Try smaller shrink if full fails, then break
-                        next_shrunk_half = current_poly_to_shrink.buffer(-sensor_radius_world, join_style="mitre")
+                        next_shrunk_half = current_poly_to_shrink.buffer(-sensor_radius_world, join_style="round")
                         if next_shrunk_half.is_empty or not next_shrunk_half.is_valid: break
                         current_poly_to_shrink = next_shrunk_half
                     else:
                         current_poly_to_shrink = next_shrunk
-        
+
         log.info(f"Generated {len(coverage_rings_world)} coverage rings after shrinking.")
         if not coverage_rings_world: return []
 
@@ -561,7 +556,7 @@ class Environment:
 
             coords = list(ring_exterior.coords)
             if not coords or len(coords) < 2 : continue
-            
+
             # Make start point consistent for cutting (e.g. min x, then min y)
             min_idx = min(range(len(coords)), key=lambda i: (coords[i][0], coords[i][1]))
             # Ensure it's an open line for cutting by removing duplicate end if it's closed
@@ -578,7 +573,7 @@ class Environment:
                 paths_world.extend(self.modulus_cut([open_line_to_cut], max_path_length_world))
             elif open_line_to_cut.length > EPS : # Add if it has some length
                 paths_world.append(open_line_to_cut)
-        
+
         final_paths = []
         for line_seg in paths_world:
             if line_seg.length > sensor_radius_world: # Ensure line is longer than sensor radius before cutting start
@@ -587,31 +582,29 @@ class Environment:
                     final_paths.append(path_main_segment)
             elif line_seg.length > EPS: # Keep shorter valid segments
                  final_paths.append(line_seg)
-        
+
         end_time = time.time()
         log.info(f"Informative coverage: {end_time - start_time:.2f}s, {len(final_paths)} paths generated.")
         return final_paths
 
-    # Plotting methods (plot, visualise_environment, plot_heatmap_interactive) follow...
-    # Ensure these methods correctly use self.polygon.crs and handle cases where heatmaps/paths might be None or empty.
     def plot(
         self,
         show_basemap=True,
         show_features=False,
         show_heatmap=True,
         show_coverage=False,
-        combined_heatmap_override=None, 
-        coverage_paths_override=None 
+        combined_heatmap_override=None,
+        coverage_paths_override=None
     ):
-        fig, ax = plt.subplots(figsize=(12,12)) 
-        if self.polygon is None: 
+        fig, ax = plt.subplots(figsize=(12,12))
+        if self.polygon is None:
             log.error("Cannot plot: Environment polygon not initialized.")
             return
         ax.set_xlim(self.minx - self.buffer_val, self.maxx + self.buffer_val)
         ax.set_ylim(self.miny - self.buffer_val, self.maxy + self.buffer_val)
-        ax.set_aspect('equal', adjustable='box') 
+        ax.set_aspect('equal', adjustable='box')
 
-        current_alpha = 1.0 
+        current_alpha = 1.0
 
         if show_basemap:
             if self.polygon.crs:
@@ -624,8 +617,8 @@ class Environment:
         if show_features:
             self.polygon.plot(ax=ax, linestyle="--", facecolor="none", edgecolor="black", alpha=0.8, linewidth=1.5, label="Boundary")
             num_feature_cats = len(self.features)
-            feature_color_map = plt.cm.get_cmap('tab20', num_feature_cats if num_feature_cats > 0 else 1) 
-            
+            feature_color_map = plt.cm.get_cmap('tab20', num_feature_cats if num_feature_cats > 0 else 1)
+
             plotted_feature_labels = set()
             for i, (key, feature_gdf) in enumerate(self.features.items()):
                 if feature_gdf is not None and not feature_gdf.empty:
@@ -648,18 +641,18 @@ class Environment:
             custom_cmap = LinearSegmentedColormap.from_list("custom_fade_more_transparent", colors)
 
             extent = [self.xedges[0], self.xedges[-1], self.yedges[0], self.yedges[-1]]
-            
+
             im = ax.imshow(
                 heatmap_to_display, extent=extent, origin="lower", cmap=custom_cmap, alpha=current_alpha, interpolation='bilinear',
                 vmin=0, vmax=np.percentile(heatmap_to_display[heatmap_to_display > 0], 99) if np.any(heatmap_to_display > 0) else 1 # Robust vmax
             )
-            cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, shrink=0.7) 
+            cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, shrink=0.7)
             cbar.set_label('Probability Density')
 
 
         paths_to_display = coverage_paths_override
         if show_coverage and paths_to_display is None and heatmap_to_display is not None:
-            sensor_radius = 8.0 
+            sensor_radius = 8.0
             paths_to_display = self.informative_coverage(heatmap_to_display, sensor_radius_world=sensor_radius)
 
         if show_coverage and paths_to_display:
@@ -669,19 +662,19 @@ class Environment:
             else:
                 coverage_multiline = GeoMultiTrajectory(paths_to_display, crs=self.polygon.crs)
                 coverage_multiline.plot(ax=ax, color='fuchsia', linewidth=1.2, alpha=0.9, label="Coverage Paths")
-        
+
         ax.set_title("SAR Environment Overview")
         ax.set_xlabel(f"X Coordinate ({self.polygon.crs})")
         ax.set_ylabel(f"Y Coordinate ({self.polygon.crs})")
-        
+
         handles, labels = ax.get_legend_handles_labels()
         if handles: # Avoid empty legend warning
-            ax.legend(handles=handles, labels=labels, loc='upper left', bbox_to_anchor=(1.02, 1), title="Legend") 
-        
-        plt.tight_layout(rect=[0, 0, 0.80, 1]) 
+            ax.legend(handles=handles, labels=labels, loc='upper left', bbox_to_anchor=(1.02, 1), title="Legend")
+
+        plt.tight_layout(rect=[0, 0, 0.80, 1])
         plt.grid(True, linestyle=':', alpha=0.5)
         plt.show()
-        
+
     def visualise_environment(self):
         fig, ax = plt.subplots(figsize=(10, 10))
         if self.polygon is None:
@@ -702,29 +695,79 @@ class Environment:
                 legend_handles.append(
                     Patch(facecolor=color_val, edgecolor=color_val, label=feature_type.capitalize(), alpha=0.6)
                 )
-        
+
         ax.set_title("Environment Features Visualization")
         ax.set_xlabel(f"X Coordinate ({self.polygon.crs})")
         ax.set_ylabel(f"Y Coordinate ({self.polygon.crs})")
         if legend_handles:
             ax.legend(handles=legend_handles, loc='upper left', bbox_to_anchor=(1.02, 1))
 
-        plt.tight_layout(rect=[0, 0, 0.80, 1]) 
+        plt.tight_layout(rect=[0, 0, 0.80, 1])
         plt.grid(True, linestyle=':', alpha=0.5)
-        plt.show()
-        
-    def plot_heatmap_interactive( 
+        plt.pause(0.1)  # Allow GUI to update
+
+    def plot_heatmap_simple(
         self,
-        initial_heatmap: np.ndarray, 
+        heatmap: np.ndarray,
+        show_basemap=True,
+        show_features=False,
+        export_final_image=False,
+    ):
+        if self.polygon is None or self.xedges is None or self.yedges is None:
+            log.error("Environment not fully initialized for plotting.")
+            return
+
+        fig, ax = plt.subplots(figsize=(12, 10))
+
+        ax.set_xlim(self.minx - self.buffer_val, self.maxx + self.buffer_val)
+        ax.set_ylim(self.miny - self.buffer_val, self.maxy + self.buffer_val)
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_title("Heatmap Visualization")
+
+        alpha_val_basemap = 1.0
+        if show_basemap and self.polygon.crs:
+            plot_utils.plot_basemap(ax=ax, source=cx.providers.OpenStreetMap.Mapnik, crs=self.polygon.crs)
+            alpha_val_basemap = 0.6
+
+        if show_features:
+            self.polygon.plot(ax=ax, linestyle="--", facecolor="none", edgecolor="darkgray", alpha=alpha_val_basemap, linewidth=0.8)
+            # TODO plot all features
+
+        colors_heatmap = [(1, 1, 1, 0), (0, 0, 1, 0.2), (0, 0.5, 1, 0.4), (0, 1, 1, 0.6), (0.5, 1, 0, 0.8), (1, 1, 0, 0.9), (1, 0, 0, 1)]
+        custom_cmap_heatmap = LinearSegmentedColormap.from_list("custom_fade_gradual", colors_heatmap, N=256)
+        extent_heatmap = [self.xedges[0], self.xedges[-1], self.yedges[0], self.yedges[-1]]
+
+        heatmap_display_artist = ax.imshow(
+            heatmap,
+            extent=extent_heatmap,
+            origin="lower",
+            cmap=custom_cmap_heatmap,
+            alpha=alpha_val_basemap,
+            # interpolation='nearest',  # Ensure no interpolation
+        )
+        cbar_heatmap = fig.colorbar(heatmap_display_artist, ax=ax, fraction=0.046, pad=0.04, shrink=0.7)
+        cbar_heatmap.set_label('Probability Density')
+        if np.any(heatmap > 0):
+            cbar_heatmap.mappable.set_clim(vmin=0, vmax=np.percentile(heatmap[heatmap > 0], 99.5))
+
+        if export_final_image:
+            plt.savefig("heatmap_visualization.png", dpi=300, bbox_inches='tight')
+            log.info("Plot saved to heatmap_visualization.png")
+
+        plt.show()
+
+    def plot_heatmap_interactive(
+        self,
+        initial_heatmap: np.ndarray,
         show_basemap=True,
         show_features=False, # Typically false for interactive clarity on heatmap
-        export_final_image=False, 
-        show_coverage_paths=True, 
+        export_final_image=False,
+        show_coverage_paths=True,
     ):
         if self.polygon is None or self.xedges is None or self.yedges is None:
             log.error("Environment not fully initialized for interactive plotting.")
             return
-            
+
         fig, ax = plt.subplots(figsize=(12,10))
         fig.subplots_adjust(left=0.1, bottom=0.40) # Increased bottom margin for more sliders
 
@@ -736,18 +779,17 @@ class Environment:
         alpha_val_basemap = 1.0 # Default alpha for layers over basemap
         if show_basemap and self.polygon.crs:
             plot_utils.plot_basemap(ax=ax, source=cx.providers.OpenStreetMap.Mapnik, crs=self.polygon.crs)
-            alpha_val_basemap = 0.6 
+            alpha_val_basemap = 0.6
 
-        if show_features: # Simplified plotting for interactive mode
-            self.polygon.plot(ax=ax, linestyle="--", facecolor="none", edgecolor="darkgray", alpha=alpha_val_basemap*0.8, linewidth=0.8)
-            # Could add a few key features if desired, but often too cluttered with heatmap
-
+        if show_features:
+            # TODO show the features in the image coordinates
+            pass
         colors_heatmap = [(1,1,1,0), (0.1,0.1,1,0.1), (0,0.5,1,0.3), (0,1,1,0.5), (0.7,1,0,0.7), (1,1,0,0.85), (1,0,0,1)]
         custom_cmap_heatmap = LinearSegmentedColormap.from_list("custom_fade_interactive", colors_heatmap)
         extent_heatmap = [self.xedges[0], self.xedges[-1], self.yedges[0], self.yedges[-1]]
 
         heatmap_display_artist = ax.imshow(
-            initial_heatmap, 
+            initial_heatmap,
             extent=extent_heatmap, origin="lower", cmap=custom_cmap_heatmap, alpha=alpha_val_basemap, interpolation='bilinear'
         )
         cbar_heatmap = fig.colorbar(heatmap_display_artist, ax=ax, fraction=0.046, pad=0.04, shrink=0.7)
@@ -755,9 +797,8 @@ class Environment:
         if np.any(initial_heatmap > 0): # Avoid error if all zero
              cbar_heatmap.mappable.set_clim(vmin=0, vmax=np.percentile(initial_heatmap[initial_heatmap > 0], 99.5))
 
+        coverage_plot_artists_list = []
 
-        coverage_plot_artists_list = [] 
-        
         # Ensure self.heatmaps is populated for slider creation based on available features
         if not self.heatmaps or not any(h is not None for h in self.heatmaps.values()):
             log.info("Individual heatmaps for features not found, generating them now for slider setup.")
@@ -770,18 +811,17 @@ class Environment:
             plt.show()
             return
 
-
         slider_start_y_pos = 0.30
         slider_element_height = 0.02
         slider_vertical_spacing = 0.025 # Spacing between slider elements (sigma + alpha for one feature)
 
         sigma_sliders_dict = {}
         alpha_sliders_dict = {}
-        
+
         # Dynamically create sliders based on available heatmaps
         for i, key in enumerate(sorted_feature_keys_for_sliders):
             current_y_pos = slider_start_y_pos - i * slider_vertical_spacing * 2 # *2 for sigma and alpha pair
-            
+
             ax_sigma_slider = fig.add_axes([0.15, current_y_pos, 0.3, slider_element_height])
             sigma_sliders_dict[key] = Slider(ax_sigma_slider, f"{key[:10]} σ", 0.0, 10.0, valinit=3.0, valstep=0.1)
 
@@ -790,7 +830,7 @@ class Environment:
 
         # Sliders for coverage parameters, placed below feature sliders
         coverage_params_y_start = slider_start_y_pos - (len(sorted_feature_keys_for_sliders)) * slider_vertical_spacing * 2
-        
+
         ax_sensor_radius_slider = fig.add_axes([0.15, coverage_params_y_start - slider_vertical_spacing, 0.3, slider_element_height])
         sensor_radius_slider_widget = Slider(ax_sensor_radius_slider, "Sensor Rad.", 1.0, 50.0, valinit=8.0, valstep=0.5)
 
@@ -800,7 +840,7 @@ class Environment:
         all_slider_widgets = list(sigma_sliders_dict.values()) + list(alpha_sliders_dict.values()) + [sensor_radius_slider_widget, max_path_len_slider_widget]
 
         def update_interactive_plot(val=None):
-            nonlocal coverage_plot_artists_list 
+            nonlocal coverage_plot_artists_list
 
             current_sigmas_from_sliders = {key: s.val for key, s in sigma_sliders_dict.items()}
             current_alphas_from_sliders = {key: a.val for key, a in alpha_sliders_dict.items()}
@@ -853,14 +893,152 @@ class Environment:
 
         plt.show()
 
+class DataGenerator:
+    """
+    Generates and exports SAR environment data.
+    Uses an efficient 'query once, clip many' strategy.
+    """
 
-def get_filter_sigma(filter_width_meters: float, env_instance: Environment) -> float:
-    if not isinstance(env_instance, Environment) or env_instance.meter_per_bin <= 0:
-        raise ValueError("Valid Environment instance with positive meter_per_bin is required.")
-    if filter_width_meters < 0 : filter_width_meters = 0 # Sigma cannot be from negative width
+    def __init__(self):
+        """
+        Initializes the DataGenerator with a standardized set of OSM feature tags.
+        """
+        self.tags_mapping = {
+            "structure": {"building": True, "man_made": True, "bridge": True, "tunnel": True,},
+            "road": {"highway": True, "tracktype": True},
+            "linear": {"railway": True, "barrier": True, "fence": True, "wall": True, "pipeline": True,},
+            "drainage": {"waterway": ["drain", "ditch", "culvert", "canal"]},
+            "water": {"natural": ["water", "wetland"], "water": True, "wetland": True, "reservoir": True,},
+            "brush": {"landuse": ["grass"]},
+            "scrub": {"natural": "scrub"},
+            "woodland": {"landuse": ["forest", "wood"], "natural": "wood"},
+            "field": {"landuse": ["farmland", "farm", "meadow"]},
+            "rock": {"natural": ["rock", "bare_rock", "scree", "cliff"]},
+        }
 
-    filter_width_pixels = filter_width_meters / env_instance.meter_per_bin
-    if filter_width_pixels <= 1e-6: return 0.0 
-    # FWHM = 2 * sqrt(2 * ln(2)) * sigma  => sigma = FWHM / (2.35482)
-    sigma = filter_width_pixels / (2 * np.sqrt(2 * np.log(2))) 
-    return sigma
+        self._builder = EnvironmentBuilder()
+        for feature_category, osm_tags in self.tags_mapping.items():
+            self._builder.set_feature(feature_category, osm_tags)
+
+        self.quantile_radii_km = {
+            'q1': 0.6,
+            'median': 1.8,
+            'q3': 3.2,
+            'q95': 9.9,
+        }
+
+    def _get_utm_epsg(self, lon: float, lat: float) -> str:
+        """Calculates the appropriate UTM zone EPSG code for a given point."""
+        zone = int((lon + 180) / 6) + 1
+        epsg_code = f"326{zone}" if lat >= 0 else f"327{zone}"
+        log.info(f"Determined UTM zone for point ({lon}, {lat}) as EPSG:{epsg_code}")
+        return f"EPSG:{epsg_code}"
+
+    def _create_circular_polygon(self, center_lon: float, center_lat: float, radius_km: float) -> dict:
+        """Creates a GeoJSON dictionary for a circular polygon centered at a point."""
+        point = shapely.Point(center_lon, center_lat)
+        gdf = gpd.GeoDataFrame([1], geometry=[point], crs="EPSG:4326")
+
+        projected_crs = self._get_utm_epsg(center_lon, center_lat)
+        gdf_proj = gdf.to_crs(projected_crs)
+
+        radius_meters = radius_km * 1000
+        circle_proj = gdf_proj.buffer(radius_meters).iloc[0]
+
+        circle_gdf_proj = gpd.GeoDataFrame([1], geometry=[circle_proj], crs=projected_crs)
+        circle_gdf_wgs84 = circle_gdf_proj.to_crs("EPSG:4326")
+
+        return circle_gdf_wgs84.geometry.iloc[0]
+
+    def generate(self, center_point: tuple[float, float], quantile: str, meter_per_bin: int = 5) -> 'Environment | None':
+        """Generates a single Environment object for a given location and quantile."""
+        center_lon, center_lat = center_point
+        radius_km = self.quantile_radii_km[quantile]
+        projected_crs = self._get_utm_epsg(center_lon, center_lat)
+
+        log.info(f"Generating data for center ({center_lon:.4f}, {center_lat:.4f}) with quantile '{quantile}' (radius: {radius_km} km).")
+        geojson_poly = self._create_circular_polygon(center_lon, center_lat, radius_km)
+
+        try:
+            env = self._builder.set_polygon(geojson_poly).set_projected_crs(projected_crs).set_meter_per_bin(meter_per_bin).build()
+            return env
+        except Exception as e:
+            log.error(f"An error occurred during environment generation: {e}", exc_info=True)
+            return None
+
+
+    def export_all_quantiles(self, center_point: tuple[float, float], output_directory: str, meter_per_bin: int = 5):
+        """
+        Efficiently generates and exports data for all predefined quantiles. The center point
+        is embedded within each GeoJSON file.
+        """
+        log.info(f"--- Starting efficient batch export to '{output_directory}' ---")
+        os.makedirs(output_directory, exist_ok=True)
+        center_lon, center_lat = center_point
+
+        # 1. Generate the single, largest environment (q95)
+        log.info("--- Generating master environment for the largest radius (q95) ---")
+        master_env = self.generate(center_point, 'q95', meter_per_bin)
+        if not master_env:
+            log.error("Failed to generate the master environment. Aborting export.")
+            return
+
+        # 2. Combine all features from the master environment into one GeoDataFrame
+        master_features_list = []
+        for key, gdf in master_env.features.items():
+            if gdf is not None and not gdf.empty:
+                temp_gdf = gdf.copy()
+                temp_gdf['feature_type'] = key
+                master_features_list.append(temp_gdf)
+
+        if not master_features_list:
+            log.warning("No features found in the master environment. Skipping feature export.")
+            master_features_gdf = None
+        else:
+            master_features_gdf = pd.concat(master_features_list, ignore_index=True)
+
+        # 3. Generate the single, master heatmap
+        log.info("--- Generating master heatmap for the largest radius ---")
+        master_heatmap = master_env.get_combined_heatmap()
+
+        master_env.plot(show_basemap=True, show_features=False, show_heatmap=True, show_coverage=False, combined_heatmap_override=master_heatmap)
+
+        # 4. Loop through all quantiles to clip and export subsets
+        for quantile_name, radius_km in self.quantile_radii_km.items():
+            log.info(f"--- Processing and exporting subset for quantile: {quantile_name} ---")
+
+            clipping_point_wgs84 = gpd.GeoDataFrame(geometry=[Point(center_lon, center_lat)], crs="EPSG:4326")
+            clipping_point_proj = clipping_point_wgs84.to_crs(master_env.projected_crs)
+            clipping_circle_proj = clipping_point_proj.buffer(radius_km * 1000).iloc[0]
+
+            # 4a. Clip features and export
+            if master_features_gdf is not None:
+                clipped_features_proj = gpd.clip(master_features_gdf, clipping_circle_proj)
+                clipped_features_wgs84 = clipped_features_proj.to_crs("EPSG:4326")
+
+                geojson_path = os.path.join(output_directory, f"features_{quantile_name}.geojson")
+
+                # Manually create the GeoJSON dictionary to add custom metadata
+                geojson_dict = clipped_features_wgs84.__geo_interface__
+                geojson_dict['center_point'] = center_point # Embed the center point
+
+                with open(geojson_path, 'w') as f:
+                    json.dump(geojson_dict, f)
+
+                log.info(f"Exported {len(clipped_features_wgs84)} features to {geojson_path}")
+
+            # 4b. Crop heatmap and export (no changes here)
+            if master_heatmap is not None:
+                bounds = clipping_circle_proj.bounds
+                min_x, min_y, max_x, max_y = bounds
+
+                img_min_x, img_min_y = master_env.world_to_image(np.array([min_x]), np.array([min_y]))
+                img_max_x, img_max_y = master_env.world_to_image(np.array([max_x]), np.array([max_y]))
+
+                cropped_heatmap = master_heatmap[img_min_y[0]:img_max_y[0], img_min_x[0]:img_max_x[0]]
+
+                heatmap_path = os.path.join(output_directory, f"heatmap_{quantile_name}.npy")
+                np.save(heatmap_path, cropped_heatmap)
+                log.info(f"Exported heatmap matrix (shape: {cropped_heatmap.shape}) to {heatmap_path}")
+
+        log.info("--- Batch export completed. ---")

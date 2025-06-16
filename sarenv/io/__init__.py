@@ -1,7 +1,10 @@
 # sarenv/io/__init__.py
-from .osm_query import query_features, export_as_geojson
+from .loaders import DatasetLoader, SARDatasetItem
+from .osm_query import export_as_geojson, query_features
 
 __all__ = [
-    "query_features",
+    "DatasetLoader",
+    "SARDatasetItem",
     "export_as_geojson",
+    "query_features",
 ]

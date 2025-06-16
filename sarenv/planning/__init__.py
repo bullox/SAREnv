@@ -1,8 +1,9 @@
 # sarenv/planning/__init__.py
 from .decomposition import boustrophedon_decomposition
-from .path_generators import generate_search_tasks # This is a placeholder
+from .path_generators import generate_search_tasks, generate_fixed_width_contours # This is a placeholder
 
 __all__ = [
     "boustrophedon_decomposition",
     "generate_search_tasks",
+    "generate_fixed_width_contours"
 ]

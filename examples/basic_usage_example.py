@@ -1,116 +1,64 @@
 # examples/basic_usage_example.py
+import os
+import numpy as np
+import geopandas as gpd
 from sarenv import (
-    EnvironmentBuilder,
+    DataGenerator,
     get_logger,
-)  # Use the public API from sarenv's __init__
+)
 
-log = get_logger()  # Initialize and get the logger
+log = get_logger()
 
+def run_export_example():
+    """
+    An example function demonstrating how to use the DataGenerator
+    to export features and heatmaps for all quantiles.
+    """
+    log.info("--- Starting DataGenerator Export Example ---")
 
-def run_basic_example():
-    log.info("Starting SARenv basic usage example...")
+    # 1. Initialize the generator.
+    data_gen = DataGenerator()
 
-    tags_mapping = {
-        "structure": {
-            "building": True,
-            "man_made": True,
-            "bridge": True,
-            "tunnel": True,
-        },
-        "road": {"highway": True, "tracktype": True},
-        "linear": {
-            "railway": True,
-            "barrier": True,
-            "fence": True,
-            "wall": True,
-            "pipeline": True,
-        },
-        "drainage": {"waterway": ["drain", "ditch", "culvert", "canal"]},
-        "water": {
-            "natural": ["water", "wetland"],
-            "water": True,
-            "wetland": True,
-            "reservoir": True,
-        },
-        "brush": {
-            "landuse": ["grass"]
-        },  # TODO: check if meadow is supposed to be in this feature
-        "scrub": {"natural": "scrub"},
-        "woodland": {"landuse": ["forest", "wood"], "natural": "wood"},
-        "field": {"landuse": ["farmland", "farm", "meadow"]},
-        "rock": {"natural": ["rock", "bare_rock", "scree", "cliff"]},
-    }
+    # 2. Define a center point and an output directory for the dataset.
+    # odense_center_point = (10.3883, 55.3948)
+    svanninge_bakker = 10.289470,55.145921
+    output_dir = "sarenv_dataset"
 
-    builder = EnvironmentBuilder()
-    for feature_category, osm_tags in tags_mapping.items():
-        builder.set_feature(feature_category, osm_tags)
-
-    # You'll need to provide a GeoJSON file for the boundary.
-    # Create a dummy GeoJSON for testing if you don't have one readily available.
-    # Example: FlatTerrainNature.geojson
-    # Make sure this file exists in the same directory as this script, or provide a full path.
-    polygon_geojson_file = (
-        "FlatTerrainNature.geojson"  # Replace with your actual file path
+    # 3. Run the main export function.
+    # This will generate an environment for each quantile (q1, median, q3, q95)
+    # and save the corresponding files to the output directory.
+    data_gen.export_all_quantiles(
+        center_point=svanninge_bakker,
+        output_directory=output_dir,
+        meter_per_bin=5  # Use a slightly coarser resolution for faster generation
     )
 
+    # 4. (Optional) Verify the exported files.
+    log.info("--- Verifying exported files ---")
     try:
-        log.info(f"Attempting to load environment from: {polygon_geojson_file}")
-        env = (
-            builder.set_polygon_file(polygon_geojson_file).set_meter_per_bin(5).build()
-        )
-        log.info("Environment built successfully.")
+        # Check the files for the 'median' quantile
+        median_heatmap_path = os.path.join(output_dir, "heatmap_median.npy")
+        median_features_path = os.path.join(output_dir, "features_median.geojson")
 
-        log.info("Visualizing environment features...")
-        env.visualise_environment()  # Shows raw features
-
-        log.info(
-            "Generating and displaying combined heatmap with interactive sliders..."
-        )
-        # Ensure heatmaps are generated before calling plot_heatmap_interactive if it relies on self.heatmaps
-        # env.generate_heatmaps() # This is now called within get_combined_heatmap if needed
-
-        initial_combined_heatmap = env.get_combined_heatmap()  # Get an initial heatmap
-        if initial_combined_heatmap is not None:
-            env.plot_heatmap_interactive(
-                initial_heatmap=initial_combined_heatmap,
-                show_basemap=False,
-                show_features=False,  # Keep this false for interactive heatmap clarity
-                show_coverage_paths=False,
-                export_final_image=True,
-            )
+        if os.path.exists(median_heatmap_path):
+            heatmap_matrix = np.load(median_heatmap_path)
+            log.info(f"Loaded heatmap 'heatmap_median.npy'. Shape: {heatmap_matrix.shape}")
+            # You could now use this matrix for analysis or as input to a model.
         else:
-            log.error("Failed to generate initial combined heatmap.")
+            log.warning(f"Verification failed: {median_heatmap_path} not found.")
 
-        # Example of using the general plot function
-        # log.info("Displaying general plot...")
-        # env.plot(show_heatmap=True, show_coverage=True, show_features=True)
+        if os.path.exists(median_features_path):
+            features_gdf = gpd.read_file(median_features_path)
+            log.info(f"Loaded features 'features_median.geojson'. Found {len(features_gdf)} features.")
+            log.info("Sample of loaded features:")
+            print(features_gdf.head())
+        else:
+            log.warning(f"Verification failed: {median_features_path} not found.")
 
-    except FileNotFoundError:
-        log.error(f"Error: The GeoJSON file '{polygon_geojson_file}' was not found.")
-        log.error("Please create this file or provide the correct path.")
-        log.error("A simple GeoJSON polygon example:")
-        log.error(
-            """
-        {
-          "type": "FeatureCollection",
-          "features": [
-            {
-              "type": "Feature",
-              "properties": {},
-              "geometry": {
-                "type": "Polygon",
-                "coordinates": [
-                  [ [10.0, 55.0], [10.1, 55.0], [10.1, 55.1], [10.0, 55.1], [10.0, 55.0] ]
-                ]
-              }
-            }
-          ]
-        }
-        """
-        )
     except Exception as e:
-        log.error(f"An error occurred during the example run: {e}", exc_info=True)
+        log.error(f"An error occurred during verification: {e}", exc_info=True)
 
 
 if __name__ == "__main__":
-    run_basic_example()
+    # You can run either the visualization example or the export example
+    run_export_example()

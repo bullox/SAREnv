@@ -1,21 +1,22 @@
 # sarenv/core/__init__.py
-from .environment import Environment, EnvironmentBuilder
+from .environment import DataGenerator, Environment, EnvironmentBuilder
 from .geometries import (
     GeoData,
+    GeoMultiPolygon,
+    GeoMultiTrajectory,
     GeoPoint,
     GeoPolygon,
-    GeoMultiPolygon,
     GeoTrajectory,
-    GeoMultiTrajectory,
 )
 
 __all__ = [
+    "DataGenerator",
     "Environment",
     "EnvironmentBuilder",
     "GeoData",
+    "GeoMultiPolygon",
+    "GeoMultiTrajectory",
     "GeoPoint",
     "GeoPolygon",
-    "GeoMultiPolygon",
     "GeoTrajectory",
-    "GeoMultiTrajectory",
 ]
