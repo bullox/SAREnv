@@ -1,0 +1,12 @@
+geopandas
+matplotlib
+osmnx
+shapely
+geopy
+pyproj
+geojson
+colorama
+contextily
+Pillow
+scikit-image
+opencv-python
