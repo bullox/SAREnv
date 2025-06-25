@@ -1,6 +1,7 @@
 # sarenv/core/environment.py
 import concurrent.futures
 import json
+import math
 import os
 import time
 from collections import defaultdict
@@ -453,24 +454,6 @@ class Environment:
             combined_heatmap = np.maximum(combined_heatmap, filtered_heatmap_part)
         return combined_heatmap
 
-    def binary_cut(
-        self, lines: list[LineString], max_length: float
-    ) -> list[LineString]:
-        result = []
-        processing_lines = list(lines)
-        while processing_lines:
-            line = processing_lines.pop(0)
-            if line.length > max_length:
-                part1, part2 = self.cut(line, line.length / 2)
-                if part1 and not part1.is_empty:
-                    processing_lines.append(part1)
-                if part2 and not part2.is_empty:
-                    processing_lines.append(part2)
-            else:
-                if line and not line.is_empty:
-                    result.append(line)
-        return result
-
 
 class DataGenerator:
     """
@@ -616,17 +599,44 @@ class DataGenerator:
             master_features_gdf = gpd.GeoDataFrame(
                 columns=["geometry", "feature_type"],
                 geometry="geometry",
-                crs="EPSG:4326",
+                crs=master_env.projected_crs,
             )
         else:
             master_features_gdf = pd.concat(master_features_list, ignore_index=True)
+
+        log.info("Calculating area-weighted probabilities for master features...")
+
+        def get_influence_area(geom):
+            if isinstance(geom, shapely.Polygon):
+                return geom.area
+            elif isinstance(geom, LineString):
+                return geom.length * 30  # As specified
+            return 0
+
+        master_features_gdf["influence_area"] = master_features_gdf.geometry.apply(
+            get_influence_area
+        )
+
+        # Normalize by the sum of all influence areas
+        total_influence_area = master_features_gdf["influence_area"].sum()
+
+        if total_influence_area > 0:
+            master_features_gdf["area_probability"] = (
+                master_features_gdf["influence_area"] / total_influence_area
+            )
+        else:
+            master_features_gdf["area_probability"] = 0
+
+        log.info("Finished calculating area-weighted probabilities.")
 
         # 3. Export the combined features GeoDataFrame with metadata
         geojson_path = os.path.join(output_directory, "features_master.geojson")
 
         # Manually create the GeoJSON dictionary to add custom metadata
+        # Ensure final export is in WGS84 for broad compatibility
         master_features_gdf.to_crs("EPSG:4326", inplace=True)
         geojson_dict = master_features_gdf.__geo_interface__
+        
         geojson_dict["center_point"] = center_point
         geojson_dict["meter_per_bin"] = meter_per_bin
         geojson_dict["source_radius_km"] = self.size_radii_km["xlarge"]
@@ -657,3 +667,4 @@ class DataGenerator:
             )
 
         log.info("--- Master dataset export completed. ---")
+

@@ -13,7 +13,7 @@ from .core.geometries import (
     GeoPolygon,
     GeoTrajectory,
 )
-from .io.loaders import DatasetLoader, SARDatasetItem
+from .io.loaders import DatasetLoader, SARDatasetItem, SurvivorLocationGenerator
 from .io.osm_query import query_features as query_osm_features  # Renamed for clarity
 from .planning.decomposition import boustrophedon_decomposition
 from .planning.path_generators import (  # Placeholder for now
@@ -40,6 +40,7 @@ __all__ = [
     "boustrophedon_decomposition",
     "generate_fixed_width_contours",
     "generate_search_tasks",
+    "SurvivorLocationGenerator"
     "get_logger",
     "plot_basemap",
     "query_osm_features",
