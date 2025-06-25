@@ -1,4 +1,4 @@
-# examples/spiral_tests.py
+# examples/coverage_paths_and_metrics.py
 import os
 from typing import List
 import numpy as np
@@ -11,6 +11,7 @@ from scipy.interpolate import RegularGridInterpolator
 from sarenv import (
     DatasetLoader,
     SARDatasetItem,
+    SurvivorLocationGenerator,
     get_logger,
 )
 from sarenv.utils.plot_utils import FEATURE_COLOR_MAP, DEFAULT_COLOR
@@ -116,20 +117,11 @@ def generate_pizza_zigzag_path(center_x: float, center_y: float, max_radius: flo
             paths.append(LineString(points))
     return paths
 
-def place_victims_in_polygons(num_victims: int, search_area: Polygon) -> gpd.GeoDataFrame:
-    points = []
-    minx, miny, maxx, maxy = search_area.bounds
-    while len(points) < num_victims:
-        pnt = Point(np.random.uniform(minx, maxx), np.random.uniform(miny, maxy))
-        if search_area.contains(pnt):
-            points.append(pnt)
-    return gpd.GeoDataFrame(geometry=points, crs=None)
-
 class PathEvaluator:
     def __init__(self, heatmap: np.ndarray, extent: tuple, victims: gpd.GeoDataFrame, fov_deg: float, altitude: float):
         self.heatmap = heatmap; self.extent = extent; self.victims = victims
         self.detection_radius = altitude * np.tan(np.radians(fov_deg / 2))
-        minx, maxx, miny, maxy = self.extent
+        minx, miny, maxx, maxy = self.extent
         y_range = np.linspace(miny, maxy, heatmap.shape[0])
         x_range = np.linspace(minx, maxx, heatmap.shape[1])
         self.interpolator = RegularGridInterpolator((y_range, x_range), heatmap, bounds_error=False, fill_value=0)
@@ -158,7 +150,7 @@ class PathEvaluator:
     def calculate_victims_found_score(self, paths: List[LineString]) -> dict:
         valid_paths = [p for p in paths if not p.is_empty]
         if not valid_paths or self.victims.empty: return {'percentage_found': 0, 'detection_timeliness': 0}
-        coverage_area = gpd.GeoSeries(valid_paths).buffer(self.detection_radius).union_all()
+        coverage_area = gpd.GeoSeries(valid_paths, crs=self.victims.crs).buffer(self.detection_radius).union_all()
         found_victims = self.victims[self.victims.within(coverage_area)]
         percentage_found = (len(found_victims) / len(self.victims)) * 100 if not self.victims.empty else 0
         timeliness = []
@@ -169,21 +161,19 @@ class PathEvaluator:
         return {'percentage_found': percentage_found, 'detection_timeliness': np.mean(timeliness) if timeliness else 0}
 
 # --- Visualization functions ---
-def visualize_heatmap_plotly(item: SARDatasetItem):
-    log.info(f"Generating interactive heatmap visualization for quantile: {item.quantile}...")
-    data_crs = get_utm_epsg(item.center_point[0], item.center_point[1])
-    features_proj = item.features.to_crs(crs=data_crs)
-    minx, miny, maxx, maxy = features_proj.total_bounds
+def visualize_heatmap_plotly(item: SARDatasetItem, data_crs: str):
+    log.info(f"Generating interactive heatmap visualization for size: {item.size}...")
+    minx, miny, maxx, maxy = item.bounds
     fig = go.Figure(data=go.Heatmap(z=item.heatmap, x=np.linspace(minx, maxx, item.heatmap.shape[1]), y=np.linspace(miny, maxy, item.heatmap.shape[0]), colorscale='Inferno', colorbar=dict(title='Probability Density')))
-    fig.update_layout(title=f"Interactive Heatmap: Quantile '{item.quantile}'", xaxis_title="Easting (meters)", yaxis_title="Northing (meters)", yaxis_scaleanchor="x", template="plotly_white")
-    output_path = GRAPHS_DIR + "/" + "heatmap.html"
+    fig.update_layout(title=f"Interactive Heatmap: Size '{item.size}'", xaxis_title="Easting (meters)", yaxis_title="Northing (meters)", yaxis_scaleanchor="x", template="plotly_white")
+    output_path = os.path.join(GRAPHS_DIR, "heatmap.html")
     fig.write_html(output_path, include_plotlyjs="cdn")
     log.info(f"Heatmap saved to {output_path}")
 
 def visualize_single_path_plotly(item: SARDatasetItem, path_name: str, paths: list, colors: list, victims: gpd.GeoDataFrame, data_crs: str):
     log.info(f"Generating visualization for '{path_name}' path...")
     features_proj = item.features.to_crs(crs=data_crs)
-    victims_proj = victims.to_crs(crs=data_crs)
+    victims_proj = victims.to_crs(crs=data_crs) if not victims.empty else victims
     fig = go.Figure()
 
     if PLOT_MAP_FEATURES:
@@ -211,7 +201,7 @@ def visualize_single_path_plotly(item: SARDatasetItem, path_name: str, paths: li
     
     clean_name = path_name.lower().replace(' ', '_')
     fig.update_layout(title=f"Coverage Path for '{path_name}' Pattern", xaxis_title="Easting (meters)", yaxis_title="Northing (meters)", legend_title_text="Legend", yaxis_scaleanchor="x", template="plotly_white")
-    output_path = GRAPHS_DIR + "/" + f"coverage_{clean_name}.html"
+    output_path = os.path.join(GRAPHS_DIR, f"coverage_{clean_name}.html")
     fig.write_html(output_path, include_plotlyjs="cdn")
     log.info(f"Path visualization saved to {output_path}")
 
@@ -219,30 +209,41 @@ def visualize_single_path_plotly(item: SARDatasetItem, path_name: str, paths: li
 def run_evaluation_and_visualization():
     log.info("--- Starting Multi-Drone Path Evaluation and Visualization ---")
     dataset_dir = "sarenv_dataset"
+    os.makedirs(GRAPHS_DIR, exist_ok=True)
     try:
         loader = DatasetLoader(dataset_directory=dataset_dir)
-        quantiles = ['q1', 'median', 'q3', 'q95']
-        loaded_items = [item for q in quantiles if (item := loader.load_quantile(q))]
-        if not loaded_items:
-            log.error(f"Could not load any specified quantiles: {quantiles}")
+        # Use the largest available size for the evaluation scenario
+        evaluation_size = "xlarge"
+        
+        log.info(f"Loading data for evaluation size: '{evaluation_size}'")
+        item = loader.load_size(evaluation_size)
+        if not item:
+            log.error(f"Could not load data for size '{evaluation_size}'. Please run the DataGenerator first.")
             return
         
-        items = sorted(loaded_items, key=lambda i: i.radius_km)
-        largest_item = items[-1]
-        data_crs = get_utm_epsg(largest_item.center_point[0], largest_item.center_point[1])
-        features_proj = largest_item.features.to_crs(crs=data_crs)
-        extent = features_proj.total_bounds
+        data_crs = get_utm_epsg(item.center_point[0], item.center_point[1])
+        extent = item.bounds
         
-        search_area = features_proj.union_all()
-        victims = place_victims_in_polygons(NUM_VICTIMS, search_area)
-        victims.crs = data_crs
+        # Use the SurvivorLocationGenerator to place victims realistically
+        log.info(f"Generating {NUM_VICTIMS} victim locations...")
+        victim_generator = SurvivorLocationGenerator(item)
+        victim_points = [victim_generator.generate_location() for _ in range(NUM_VICTIMS)]
+        victim_points = [p for p in victim_points if p is not None] # Filter out None values
         
-        evaluator = PathEvaluator(largest_item.heatmap, extent, victims, FOV_DEGREES, ALTITUDE_METERS)
+        if not victim_points:
+            log.error("Failed to generate any victim locations.")
+            victims = gpd.GeoDataFrame(columns=['geometry'], crs=data_crs)
+        else:
+            victims = gpd.GeoDataFrame(geometry=victim_points, crs=data_crs)
         
-        dissolved_proj = features_proj.dissolve()
-        centroid_proj = dissolved_proj.centroid
-        center_x, center_y = centroid_proj.x.iloc[0], centroid_proj.y.iloc[0]
-        max_radius_m = largest_item.radius_km * 1000
+        evaluator = PathEvaluator(item.heatmap, extent, victims, FOV_DEGREES, ALTITUDE_METERS)
+        
+        # Get center point from the loaded item for path generation
+        center_lon, center_lat = item.center_point
+        center_point_gdf = gpd.GeoDataFrame(geometry=[Point(center_lon, center_lat)], crs="EPSG:4326")
+        center_proj = center_point_gdf.to_crs(data_crs).geometry.iloc[0]
+        center_x, center_y = center_proj.x, center_proj.y
+        max_radius_m = item.radius_km * 1000
         
         path_generators = {
             "Spiral": lambda: generate_spiral_path(center_x, center_y, max_radius_m, FOV_DEGREES, ALTITUDE_METERS, OVERLAP_RATIO, NUM_DRONES, PATH_POINT_SPACING_M),
@@ -270,12 +271,12 @@ def run_evaluation_and_visualization():
             print(f"  Victims Found: {victim_score['percentage_found']:.2f}%")
             print(f"  Victim Detection Timeliness (0=early, 1=late): {victim_score['detection_timeliness']:.3f}")
             
-            visualize_single_path_plotly(largest_item, name, paths, colors[name], victims, data_crs)
+            visualize_single_path_plotly(item, name, paths, colors[name], victims, data_crs)
 
-        visualize_heatmap_plotly(largest_item)
+        visualize_heatmap_plotly(item, data_crs)
 
     except FileNotFoundError:
-        log.error(f"Dataset directory '{dataset_dir}' not found.")
+        log.error(f"Dataset directory '{dataset_dir}' not found. Please run the DataGenerator first.")
     except Exception as e:
         log.error(f"An unexpected error occurred: {e}", exc_info=True)
 
