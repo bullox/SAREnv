@@ -25,32 +25,32 @@ def run_export_example():
     output_dir = "sarenv_dataset"
 
     # 3. Run the main export function.
-    data_gen.export_all_quantiles(
+    data_gen.export_master_dataset(
         center_point=svanninge_bakker,
         output_directory=output_dir,
-        meter_per_bin=30
+        meter_per_bin=30,
     )
 
     log.info("--- Verifying exported files ---")
     try:
         # Check the files for the 'median' quantile
-        median_heatmap_path = os.path.join(output_dir, "heatmap_median.npy")
-        median_features_path = os.path.join(output_dir, "features_median.geojson")
+        master_heatmap_path = os.path.join(output_dir, "heatmap_master.npy")
+        master_features_path = os.path.join(output_dir, "features_master.geojson")
 
-        if os.path.exists(median_heatmap_path):
-            heatmap_matrix = np.load(median_heatmap_path)
+        if os.path.exists(master_heatmap_path):
+            heatmap_matrix = np.load(master_heatmap_path)
             log.info(f"Loaded heatmap 'heatmap_median.npy'. Shape: {heatmap_matrix.shape}")
             # You could now use this matrix for analysis or as input to a model.
         else:
-            log.warning(f"Verification failed: {median_heatmap_path} not found.")
+            log.error(f"Verification failed: {master_heatmap_path} not found.")
 
-        if os.path.exists(median_features_path):
-            features_gdf = gpd.read_file(median_features_path)
+        if os.path.exists(master_features_path):
+            features_gdf = gpd.read_file(master_features_path)
             log.info(f"Loaded features 'features_median.geojson'. Found {len(features_gdf)} features.")
             log.info("Sample of loaded features:")
             print(features_gdf.head())
         else:
-            log.warning(f"Verification failed: {median_features_path} not found.")
+            log.error(f"Verification failed: {master_features_path} not found.")
 
     except Exception as e:
         log.error(f"An error occurred during verification: {e}", exc_info=True)

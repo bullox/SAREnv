@@ -34,5 +34,4 @@ def generate_victims_statistical(roi_polygon, ipp_point, features_gdf_dict, num_
     # 2. Sampling points from this density surface within the RoI.
     # 3. Ensuring points are within the RoI.
     victim_locations = []
-    # ... complex logic here ...
     return victim_locations
