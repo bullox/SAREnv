@@ -10,3 +10,4 @@ contextily
 Pillow
 scikit-image
 opencv-python
+plotly
