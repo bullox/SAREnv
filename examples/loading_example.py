@@ -114,7 +114,7 @@ def run_loading_example():
     log.info("--- Starting Single Dataset Loading and Visualization Example ---")
 
     dataset_dir = "sarenv_dataset"
-    size_to_load = "large"  # Define which single size you want to see
+    size_to_load = "xlarge"  # Define which single size you want to see
 
     try:
         # Initialize the new DynamicDatasetLoader
@@ -136,7 +136,7 @@ def run_loading_example():
             f"Error: The dataset directory '{dataset_dir}' or its master files were not found."
         )
         log.error(
-            "Please run the `export_master_dataset()` method from the DataGenerator first."
+            "Please run the `export_dataset()` method from the DataGenerator first."
         )
     except Exception as e:
         log.error(f"An unexpected error occurred: {e}", exc_info=True)

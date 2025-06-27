@@ -86,7 +86,7 @@ def run_survivor_generation_example(num_locations=1000, size_to_load="small"):
             f"Error: The dataset directory '{dataset_dir}' or its master files were not found."
         )
         log.error(
-            "Please run the `export_master_dataset()` method from the DataGenerator first."
+            "Please run the `export_dataset()` method from the DataGenerator first."
         )
     except Exception as e:
         log.error(f"An unexpected error occurred: {e}", exc_info=True)

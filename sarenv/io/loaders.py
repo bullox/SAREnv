@@ -31,7 +31,6 @@ class SARDatasetItem:
         features (gpd.GeoDataFrame): A GeoDataFrame containing all geographic features.
         heatmap (np.ndarray): A 2D NumPy array representing the probability heatmap.
     """
-
     size: str
     center_point: tuple[float, float]
     radius_km: float
@@ -45,7 +44,7 @@ class DatasetLoader:
     Loads a master SAR environment dataset and dynamically clips it to various sizes.
 
     This class is designed to load the 'master' files created by the
-    DataGenerator's export_master_dataset method and then process them on-the-fly.
+    DataGenerator's export_dataset method and then process them on-the-fly.
     """
 
     def __init__(self, dataset_directory: str):
@@ -328,7 +327,7 @@ class SurvivorLocationGenerator:
         # Re-normalize the 'area_probability' for the features in this specific dataset item
         total_prob_in_subset = self.features['area_probability'].sum()
         if total_prob_in_subset > 0:
-            self.features['renormalized_prob'] = self.features['area_probability'] / total_prob_in_subset
+            self.features['renormalized_prob'] = self.features['area_probability']
         else:
             self.features['renormalized_prob'] = 0
 

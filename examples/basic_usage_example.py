@@ -25,7 +25,7 @@ def run_export_example():
     output_dir = "sarenv_dataset"
 
     # 3. Run the main export function.
-    data_gen.export_master_dataset(
+    data_gen.export_dataset(
         center_point=svanninge_bakker,
         output_directory=output_dir,
         meter_per_bin=30,

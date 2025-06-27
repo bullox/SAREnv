@@ -5,19 +5,21 @@ import math
 import os
 import time
 from collections import defaultdict
-
+import elevation
+import rasterio
 import contextily as cx
 import cv2  # Ensure opencv-python is in requirements.txt
 import geopandas as gpd  # Ensure geopandas is in requirements.txt
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import requests # New import for API calls
 import shapely
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Patch
 from matplotlib.widgets import Slider
 from scipy.ndimage import gaussian_filter
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, Point, Polygon
 from skimage.draw import (
     polygon as ski_polygon,
 )
@@ -32,7 +34,156 @@ from .geometries import GeoMultiTrajectory, GeoPolygon
 log = logging_setup.get_logger()
 EPS = 1e-9
 
+def process_feature_osm(key_val_pair, query_polygon_wgs84, projected_crs):
+    """
+    Queries OSM for a given feature type, processes the geometries, and reprojects them.
+    This function is defined at the module level to be pickleable for multiprocessing.
+    """
+    key, tag_dict = key_val_pair
+    osm_geometries_dict = query_features(query_polygon_wgs84, tag_dict)
 
+    if osm_geometries_dict is None:  # query_features now returns a dict or None
+        log.warning(
+            f"No geometries returned from OSM query for features: {key}"
+        )
+        return key, None  # Return key and None for the GeoDataFrame
+
+    all_geoms_for_key = []
+    for geom in osm_geometries_dict.values():
+        if geom is not None and not geom.is_empty:
+            if hasattr(geom, "geoms"):  # MultiGeometry
+                all_geoms_for_key.extend(
+                    g for g in geom.geoms if g is not None and not g.is_empty
+                )
+            else:
+                all_geoms_for_key.append(geom)
+
+    if not all_geoms_for_key:
+        log.info(
+            f"No valid geometries found for feature type '{key}' after filtering empty ones."
+        )
+        return key, None
+
+    gdf_wgs84 = gpd.GeoDataFrame(geometry=all_geoms_for_key, crs="EPSG:4326")
+    gdf_projected = gdf_wgs84.to_crs(projected_crs)
+    log.info(
+        f"Processed {len(gdf_projected)} geometries for feature type '{key}'"
+    )
+    return key, gdf_projected
+
+
+def interpolate_line(line, distance):
+    """Interpolates points along a LineString at a given distance."""
+    if distance <= 0:
+        return [shapely.Point(line.coords[0]), shapely.Point(line.coords[-1])]
+
+    points = []
+    for i in range(len(line.coords) - 1):
+        segment = LineString([line.coords[i], line.coords[i + 1]])
+        segment_length = segment.length
+        num_points = max(1, int(segment_length / distance))
+        points.extend(
+            segment.interpolate(float(j) / num_points * segment_length)
+            for j in range(num_points)
+        )
+    points.append(
+        shapely.Point(line.coords[-1])
+    )  # Ensure the last point is included
+    return points
+
+
+def generate_heatmap_task(
+    feature_key,
+    geometry_series,
+    sample_distance,
+    xedges,
+    yedges,
+    meter_per_bin,
+    minx,
+    miny,
+    buffer_val,
+    infill_geometries=True,
+):
+    """
+    Generates a heatmap for a given set of geometries.
+    This function is defined at the module level to be pickleable for multiprocessing.
+    """
+    heatmap = np.zeros((len(yedges) - 1, len(xedges) - 1), dtype=float)
+    skipped_points = 0
+
+    for geometry in geometry_series:
+        if geometry is None or geometry.is_empty:
+            continue
+
+        current_geom_img_coords_x = []
+        current_geom_img_coords_y = []
+
+        if isinstance(geometry, LineString):
+            points_on_line = interpolate_line(geometry, sample_distance)
+            if points_on_line:
+                world_x = [p.x for p in points_on_line]
+                world_y = [p.y for p in points_on_line]
+                img_x, img_y = world_to_image(
+                    np.array(world_x), np.array(world_y), meter_per_bin, minx, miny, buffer_val
+                )
+                current_geom_img_coords_x.extend(img_x)
+                current_geom_img_coords_y.extend(img_y)
+
+        elif isinstance(geometry, shapely.geometry.Polygon):
+            if infill_geometries:
+                ext_coords_world = np.array(list(geometry.exterior.coords))
+                ext_coords_img_x_arr, ext_coords_img_y_arr = world_to_image(
+                    ext_coords_world[:, 0], ext_coords_world[:, 1], meter_per_bin, minx, miny, buffer_val
+                )
+                rr, cc = ski_polygon(ext_coords_img_y_arr, ext_coords_img_x_arr, shape=heatmap.shape)
+                current_geom_img_coords_y.extend(rr)
+                current_geom_img_coords_x.extend(cc)
+            else:
+                points_on_exterior = interpolate_line(geometry.exterior, sample_distance)
+                if points_on_exterior:
+                    world_x = [p.x for p in points_on_exterior]
+                    world_y = [p.y for p in points_on_exterior]
+                    img_x, img_y = world_to_image(
+                        np.array(world_x), np.array(world_y), meter_per_bin, minx, miny, buffer_val
+                    )
+                    current_geom_img_coords_x.extend(img_x)
+                    current_geom_img_coords_y.extend(img_y)
+
+            for interior in geometry.interiors:
+                interior_coords_world = np.array(list(interior.coords))
+                interior_coords_img_x, interior_coords_img_y = world_to_image(
+                    interior_coords_world[:, 0], interior_coords_world[:, 1], meter_per_bin, minx, miny, buffer_val
+                )
+                for ix, iy in zip(interior_coords_img_x, interior_coords_img_y):
+                    if ix in current_geom_img_coords_x and iy in current_geom_img_coords_y:
+                        idx = current_geom_img_coords_x.index(ix)
+                        if current_geom_img_coords_y[idx] == iy:
+                            current_geom_img_coords_x.pop(idx)
+                            current_geom_img_coords_y.pop(idx)
+        elif isinstance(geometry, shapely.geometry.Point):
+            # Points are not supported for heatmap generation
+            
+            skipped_points += 1
+
+
+        else:
+            log.warning(f"Unsupported geometry type for heatmap: {type(geometry)} for feature {feature_key}")
+            continue
+
+    if skipped_points > 0:
+        log.warning(f"Skipped {skipped_points} Point geometries for feature {feature_key} during heatmap generation.")
+
+        if current_geom_img_coords_x:
+            valid_indices = [
+                i for i, (x, y) in enumerate(zip(current_geom_img_coords_x, current_geom_img_coords_y))
+                if 0 <= x < heatmap.shape[1] and 0 <= y < heatmap.shape[0]
+            ]
+            if valid_indices:
+                valid_x = np.array(current_geom_img_coords_x)[valid_indices]
+                valid_y = np.array(current_geom_img_coords_y)[valid_indices]
+                heatmap[valid_y, valid_x] = 1
+
+    return heatmap
 class EnvironmentBuilder:
     def __init__(self):
         self.polygon = None
@@ -127,6 +278,7 @@ class Environment:
         self.yedges: np.ndarray | None = None
         self.heatmaps: dict[str, np.ndarray | None] = {}
         self.features: dict[str, gpd.GeoDataFrame | None] = {}
+        self.heightmap: np.ndarray | None = None # New attribute for heightmap
 
         self.polygon = GeoPolygon(
             bounding_polygon, crs="EPSG:4326"
@@ -165,54 +317,26 @@ class Environment:
 
         self._load_features()
 
+
     def _load_features(self):
         query_polygon_wgs84 = GeoPolygon(self.polygon.geometry, crs=self.polygon.crs)
         query_polygon_wgs84.set_crs("EPSG:4326")  # Ensure the query polygon is in WGS84
 
-        def process_feature_osm(key_val_pair):
-            key, tag_dict = key_val_pair
-            osm_geometries_dict = query_features(query_polygon_wgs84, tag_dict)
-
-            if osm_geometries_dict is None:  # query_features now returns a dict or None
-                log.warning(
-                    f"No geometries returned from OSM query for features: {key}"
-                )
-                return key, None  # Return key and None for the GeoDataFrame
-
-            all_geoms_for_key = []
-            for geom in osm_geometries_dict.values():
-                if geom is not None and not geom.is_empty:
-                    if hasattr(geom, "geoms"):  # MultiGeometry
-                        all_geoms_for_key.extend(
-                            g for g in geom.geoms if g is not None and not g.is_empty
-                        )
-                    else:
-                        all_geoms_for_key.append(geom)
-
-            if not all_geoms_for_key:
-                log.info(
-                    f"No valid geometries found for feature type '{key}' after filtering empty ones."
-                )
-                return key, None
-
-            gdf_wgs84 = gpd.GeoDataFrame(geometry=all_geoms_for_key, crs="EPSG:4326")
-            gdf_projected = gdf_wgs84.to_crs(self.polygon.crs)
-            log.info(
-                f"Processed {len(gdf_projected)} geometries for feature type '{key}'"
-            )
-            return key, gdf_projected
-
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_to_key = {
-                executor.submit(process_feature_osm, item): item[0]
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            # Prepare arguments for each process
+            tasks = [
+                (item, query_polygon_wgs84, self.projected_crs)
                 for item in self.tags.items()
+            ]
+            # Map tasks to futures
+            future_to_key = {
+                executor.submit(process_feature_osm, *task): task[0][0] for task in tasks
             }
+
             for future in concurrent.futures.as_completed(future_to_key):
                 key = future_to_key[future]
                 try:
-                    _, feature_gdf = (
-                        future.result()
-                    )  # process_feature_osm returns (key, gdf)
+                    _, feature_gdf = future.result()
                     self.features[key] = feature_gdf
                     if feature_gdf is not None:
                         log.info(
@@ -256,17 +380,24 @@ class Environment:
 
     def generate_heatmaps(self):
         log.info("Generating heatmaps for all features...")
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_to_key = {
-                # Pass feature_gdf.geometry (which is a GeoSeries)
-                executor.submit(
-                    self.generate_heatmap,
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            tasks = [
+                (
                     key,
                     feature_gdf.geometry,
                     self.sample_distance,
-                ): key
+                    self.xedges,
+                    self.yedges,
+                    self.meter_per_bin,
+                    self.minx,
+                    self.miny,
+                    self.buffer_val,
+                )
                 for key, feature_gdf in self.features.items()
                 if feature_gdf is not None and not feature_gdf.empty
+            ]
+            future_to_key = {
+                executor.submit(generate_heatmap_task, *task): task[0] for task in tasks
             }
             for future in concurrent.futures.as_completed(future_to_key):
                 key = future_to_key[future]
@@ -277,9 +408,10 @@ class Environment:
                 except Exception as exc:
                     log.error(
                         f"Error generating heatmap for {key}: {exc}", exc_info=True
-                    )  # Log full traceback
+                    )
                     self.heatmaps[key] = None
         log.info("Heatmap generation complete.")
+
 
     def generate_heatmap(
         self,
@@ -454,11 +586,67 @@ class Environment:
             combined_heatmap = np.maximum(combined_heatmap, filtered_heatmap_part)
         return combined_heatmap
 
+    def generate_heightmap(self, output_dir=".") -> np.ndarray | None:
+        """
+        Generates a heightmap for the environment's extent by downloading
+        DEM data and sampling it locally.
+        """
+        log.info("Generating heightmap from local DEM files...")
+        if self.polygon is None:
+            log.error("Cannot generate heightmap, environment polygon not set.")
+            return None
+
+        # Get the bounding box in WGS84
+        
+        minx, miny, maxx, maxy = self.polygon.set_crs("EPSG:4326").geometry.bounds
+        output_path = os.path.join(output_dir, "temp_dem.tif")
+        log.info(
+            f"Downloading DEM for bounds: minx={minx}, maxx={maxx}, miny={miny}, maxy={maxy}"
+        )
+        # Ensure the output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+
+        try:
+            # Download the DEM for the bounds and clip it
+            elevation.clip(bounds=(minx, maxx, miny, maxy), output=output_path)
+
+            log.info(f"DEM data saved to {output_path}")
+
+            with rasterio.open(output_path) as dem_dataset:
+                # Create a grid of points for sampling
+                x_centers = (self.xedges[:-1] + self.xedges[1:]) / 2
+                y_centers = (self.yedges[:-1] + self.yedges[1:]) / 2
+                xv, yv = np.meshgrid(x_centers, y_centers)
+                
+                points_proj = [Point(x, y) for x, y in zip(xv.ravel(), yv.ravel())]
+                grid_gdf_proj = gpd.GeoDataFrame(geometry=points_proj, crs=self.projected_crs)
+
+                # Transform sample points to the DEM's CRS
+                grid_gdf_dem_crs = grid_gdf_proj.to_crs(dem_dataset.crs)
+                coords = [(p.x, p.y) for p in grid_gdf_dem_crs.geometry]
+
+                # Sample the raster
+                elevations = [val[0] for val in dem_dataset.sample(coords)]
+                
+                # Reshape the flat list of elevations into a 2D grid
+                heightmap_grid = np.array(elevations).reshape(len(y_centers), len(x_centers))
+                self.heightmap = heightmap_grid
+                log.info(f"Successfully generated heightmap with shape {self.heightmap.shape}")
+                return self.heightmap
+        
+        except Exception as e:
+            log.error(f"Failed to generate heightmap from local DEM: {e}", exc_info=True)
+            return None
+        finally:
+            # Clean up the temporary DEM file
+            if os.path.exists(output_path):
+                os.remove(output_path)
+                log.info(f"Removed temporary DEM file: {output_path}")
+
 
 class DataGenerator:
     """
-    Generates and exports a master SAR environment dataset for a given area.
-    This master dataset can then be dynamically clipped to size by DynamicDatasetLoader.
+    Generates and exports a complete, multi-size SAR environment dataset.
     """
 
     def __init__(self):
@@ -529,7 +717,7 @@ class DataGenerator:
 
         return circle_gdf_wgs84.geometry.iloc[0]
 
-    def generate(
+    def generate_environment(
         self, center_point: tuple[float, float], size: str, meter_per_bin: int = 5
     ) -> "Environment | None":
         """Generates a single Environment object for a given location and size."""
@@ -556,7 +744,7 @@ class DataGenerator:
             )
             return None
 
-    def export_master_dataset(
+    def export_dataset(
         self,
         center_point: tuple[float, float],
         output_directory: str,
@@ -579,10 +767,12 @@ class DataGenerator:
         log.info(
             "--- Generating master environment for the largest radius ('xlarge') ---"
         )
-        master_env = self.generate(center_point, "xlarge", meter_per_bin)
+        
+        master_env = self.generate_environment(center_point, "xlarge", meter_per_bin)
         if not master_env:
             log.error("Failed to generate the master environment. Aborting export.")
             return
+
 
         # 2. Combine all features from the master environment into one GeoDataFrame
         master_features_list = []
@@ -630,7 +820,7 @@ class DataGenerator:
         log.info("Finished calculating area-weighted probabilities.")
 
         # 3. Export the combined features GeoDataFrame with metadata
-        geojson_path = os.path.join(output_directory, "features_master.geojson")
+        geojson_path = os.path.join(output_directory, "features.geojson")
 
         # Manually create the GeoJSON dictionary to add custom metadata
         # Ensure final export is in WGS84 for broad compatibility
@@ -656,7 +846,7 @@ class DataGenerator:
         master_heatmap = master_env.get_combined_heatmap()
 
         if master_heatmap is not None:
-            heatmap_path = os.path.join(output_directory, "heatmap_master.npy")
+            heatmap_path = os.path.join(output_directory, "heatmap.npy")
             np.save(heatmap_path, master_heatmap)
             log.info(
                 f"Exported master heatmap (shape: {master_heatmap.shape}) to {heatmap_path}"
@@ -666,5 +856,17 @@ class DataGenerator:
                 "Master heatmap was not generated. No heatmap file will be exported."
             )
 
+
+        # # 4. Generate the master heightmap
+        # log.info("--- Generating master heightmap ---")
+        # master_heightmap = master_env.generate_heightmap(output_dir=output_directory)
+        # if master_heightmap is None:
+        #     log.error("Failed to generate master heightmap. Aborting heightmap export.")
+        # else:
+        #     heightmap_path = os.path.join(output_directory, "heightmap.npy")
+        #     np.save(heightmap_path, master_heightmap)
+        #     log.info(
+        #         f"Exported master heightmap (shape: {master_heightmap.shape}) to {heightmap_path}"
+        #     )
         log.info("--- Master dataset export completed. ---")
 
