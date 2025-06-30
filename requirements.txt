@@ -11,3 +11,5 @@ Pillow
 scikit-image
 opencv-python
 plotly
+rasterio 
+elevation

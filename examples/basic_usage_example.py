@@ -34,8 +34,8 @@ def run_export_example():
     log.info("--- Verifying exported files ---")
     try:
         # Check the files for the 'median' quantile
-        master_heatmap_path = os.path.join(output_dir, "heatmap_master.npy")
-        master_features_path = os.path.join(output_dir, "features_master.geojson")
+        master_heatmap_path = os.path.join(output_dir, "heatmap.npy")
+        master_features_path = os.path.join(output_dir, "features.geojson")
 
         if os.path.exists(master_heatmap_path):
             heatmap_matrix = np.load(master_heatmap_path)

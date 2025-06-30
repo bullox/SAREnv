@@ -62,10 +62,10 @@ class DatasetLoader:
 
         self.dataset_directory = dataset_directory
         self.master_features_path = os.path.join(
-            self.dataset_directory, "features_master.geojson"
+            self.dataset_directory, "features.geojson"
         )
         self.master_heatmap_path = os.path.join(
-            self.dataset_directory, "heatmap_master.npy"
+            self.dataset_directory, "heatmap.npy"
         )
 
         if not os.path.exists(self.master_features_path):
@@ -327,7 +327,7 @@ class SurvivorLocationGenerator:
         # Re-normalize the 'area_probability' for the features in this specific dataset item
         total_prob_in_subset = self.features['area_probability'].sum()
         if total_prob_in_subset > 0:
-            self.features['renormalized_prob'] = self.features['area_probability']
+            self.features['renormalized_prob'] = self.features['area_probability'] / total_prob_in_subset
         else:
             self.features['renormalized_prob'] = 0
 
