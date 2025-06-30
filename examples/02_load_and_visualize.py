@@ -9,9 +9,10 @@ from sarenv import (
     SARDatasetItem,
     get_logger,
 )
+from sarenv.utils.geo import get_utm_epsg
 from sarenv.utils.plot import DEFAULT_COLOR, FEATURE_COLOR_MAP
 from shapely.geometry import Point
-from sarenv.utils.geo import get_utm_epsg
+
 log = get_logger()
 
 

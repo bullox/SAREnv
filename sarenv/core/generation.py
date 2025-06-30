@@ -19,10 +19,24 @@ from ..io.osm_query import query_features
 from ..utils import (
     logging_setup,
 )
+from ..utils.geo import image_to_world, world_to_image
 from .geometries import GeoPolygon
 
 log = logging_setup.get_logger()
 EPS = 1e-9
+
+FEATURE_PROBABILITIES ={
+            "linear": 0.25,
+            "field": 0.14,
+            "structure": 0.13,
+            "road": 0.13,
+            "drainage": 0.12,
+            "water": 0.08,
+            "brush": 0.02,
+            "scrub": 0.03,
+            "woodland": 0.07,
+            "rock": 0.04,
+        }
 
 def process_feature_osm(key_val_pair, query_polygon_wgs84, projected_crs):
     """
@@ -224,25 +238,6 @@ class EnvironmentBuilder:
             self.projected_crs,  # Pass the CRS
         )
 
-
-# Corrected global helper function
-def world_to_image(x, y, meters_per_bin, minx, miny, buffer_val):
-    # x and y can be NumPy arrays
-    x_img = (x - minx + buffer_val) / meters_per_bin
-    y_img = (y - miny + buffer_val) / meters_per_bin
-    # Convert to int array, then return.
-    # If x_img, y_img are single scalars, astype(int) also works.
-    return x_img.astype(int), y_img.astype(int)
-
-
-# This function is not strictly needed if Environment.world_to_image calls the global one directly
-# but kept for structural consistency if preferred.
-def image_to_world(x_img, y_img, meters_per_bin, minx, miny, buffer_val):
-    x_world = x_img * meters_per_bin + minx - buffer_val
-    y_world = y_img * meters_per_bin + miny - buffer_val
-    return x_world, y_world
-
-
 class Environment:
     def __init__(
         self,
@@ -334,18 +329,6 @@ class Environment:
                     log.error(f"Error processing feature {key}: {exc}", exc_info=True)
                     self.features[key] = None
 
-    # Instance method calling the global helper
-    def image_to_world(self, x_img, y_img):
-        return image_to_world(
-            x_img, y_img, self.meter_per_bin, self.minx, self.miny, self.buffer_val
-        )
-
-    # Instance method calling the global helper
-    def world_to_image(self, x_world, y_world):
-        return world_to_image(
-            x_world, y_world, self.meter_per_bin, self.minx, self.miny, self.buffer_val
-        )
-
     def interpolate_line(self, line, distance):
         if distance <= 0:
             return [shapely.Point(line.coords[0]), shapely.Point(line.coords[-1])]
@@ -398,7 +381,7 @@ class Environment:
                     self.heatmaps[key] = None
         log.info("Heatmap generation complete.")
 
-    def get_combined_heatmap(self, sigma_features=None, alpha_features=None):
+    def get_combined_heatmap(self):
         if not self.heatmaps:  # If heatmaps dict is empty
             log.info("Individual heatmaps not generated yet. Generating them now.")
             self.generate_heatmaps()
@@ -418,36 +401,6 @@ class Environment:
         combined_heatmap = np.zeros(
             (len(self.yedges) - 1, len(self.xedges) - 1), dtype=float
         )
-        if alpha_features is None:
-            alpha_features = {
-                "linear": 0.25,
-                "field": 0.14,
-                "structure": 0.13,
-                "road": 0.13,
-                "drainage": 0.12,
-                "water": 0.08,
-                "brush": 0.02,
-                "scrub": 0.03,
-                "woodland": 0.07,
-                "rock": 0.04,
-            }
-        default_sigma = (
-            sigma_features if isinstance(sigma_features, (int, float)) else 0
-        )
-        default_alpha = (
-            alpha_features if isinstance(alpha_features, (int, float)) else 0
-        )
-
-        sigma_map = (
-            sigma_features
-            if isinstance(sigma_features, dict)
-            else {key: default_sigma for key in self.tags.keys()}
-        )
-        alpha_map = (
-            alpha_features
-            if isinstance(alpha_features, dict)
-            else {key: default_alpha for key in self.tags.keys()}
-        )
 
         for key, individual_heatmap in self.heatmaps.items():
             if individual_heatmap is None:
@@ -461,14 +414,8 @@ class Environment:
                 )
                 continue
 
-            sigma = sigma_map.get(key, default_sigma)
-            alpha = alpha_map.get(key, default_alpha)
-
+            alpha = FEATURE_PROBABILITIES.get(key,0)
             filtered_heatmap_part = individual_heatmap.astype(float) * alpha
-            if sigma > 0:
-                filtered_heatmap_part = gaussian_filter(
-                    filtered_heatmap_part, sigma=sigma
-                )
 
             combined_heatmap = np.maximum(combined_heatmap, filtered_heatmap_part)
         return combined_heatmap
