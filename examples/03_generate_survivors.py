@@ -1,14 +1,13 @@
 import contextily as cx
 import geopandas as gpd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 from sarenv import (
     DatasetLoader,
     SurvivorLocationGenerator,
     get_logger,
 )
-from sarenv.utils.plot_utils import FEATURE_COLOR_MAP, DEFAULT_COLOR
-from matplotlib.patches import Patch
-
+from sarenv.utils.plot import DEFAULT_COLOR, FEATURE_COLOR_MAP
 
 log = get_logger()
 
