@@ -128,7 +128,6 @@ def generate_heatmap_task(
                 )
                 current_geom_img_coords_x.extend(img_x)
                 current_geom_img_coords_y.extend(img_y)
-
         elif isinstance(geometry, shapely.geometry.Polygon):
             if infill_geometries:
                 ext_coords_world = np.array(list(geometry.exterior.coords))
@@ -161,17 +160,10 @@ def generate_heatmap_task(
                             current_geom_img_coords_x.pop(idx)
                             current_geom_img_coords_y.pop(idx)
         elif isinstance(geometry, shapely.geometry.Point):
-            # Points are not supported for heatmap generation
-            
             skipped_points += 1
-
-
         else:
             log.warning(f"Unsupported geometry type for heatmap: {type(geometry)} for feature {feature_key}")
             continue
-
-    if skipped_points > 0:
-        log.warning(f"Skipped {skipped_points} Point geometries for feature {feature_key} during heatmap generation.")
 
         if current_geom_img_coords_x:
             valid_indices = [
@@ -183,7 +175,11 @@ def generate_heatmap_task(
                 valid_y = np.array(current_geom_img_coords_y)[valid_indices]
                 heatmap[valid_y, valid_x] = 1
 
+    if skipped_points > 0:
+        log.warning(f"Skipped {skipped_points} Point geometries for feature {feature_key} during heatmap generation.")
+
     return heatmap
+
 class EnvironmentBuilder:
     def __init__(self):
         self.polygon = None
@@ -380,17 +376,24 @@ class Environment:
 
     def generate_heatmaps(self):
         log.info("Generating heatmaps for all features...")
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_to_key = {
-                # Pass feature_gdf.geometry (which is a GeoSeries)
-                executor.submit(
-                    self.generate_heatmap,
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            tasks = [
+                (
                     key,
                     feature_gdf.geometry,
                     self.sample_distance,
-                ): key
+                    self.xedges,
+                    self.yedges,
+                    self.meter_per_bin,
+                    self.minx,
+                    self.miny,
+                    self.buffer_val,
+                )
                 for key, feature_gdf in self.features.items()
                 if feature_gdf is not None and not feature_gdf.empty
+            ]
+            future_to_key = {
+                executor.submit(generate_heatmap_task, *task): task[0] for task in tasks
             }
             for future in concurrent.futures.as_completed(future_to_key):
                 key = future_to_key[future]
@@ -401,107 +404,9 @@ class Environment:
                 except Exception as exc:
                     log.error(
                         f"Error generating heatmap for {key}: {exc}", exc_info=True
-                    )  # Log full traceback
+                    )
                     self.heatmaps[key] = None
         log.info("Heatmap generation complete.")
-
-    def generate_heatmap(
-        self,
-        feature_key: str,
-        geometry_series: gpd.GeoSeries,
-        sample_distance: float,
-        infill_geometries=True,
-    ):
-        log.debug(
-            f"Generating heatmap for feature: {feature_key} with {len(geometry_series)} geometries."
-        )
-        if self.xedges is None or self.yedges is None or self.meter_per_bin <= 0:
-            log.error("Heatmap edges or meter_per_bin not correctly initialized.")
-            raise ValueError(
-                "Heatmap edges (xedges, yedges) and meter_per_bin must be initialized and positive."
-            )
-
-        heatmap = np.zeros((len(self.yedges) - 1, len(self.xedges) - 1), dtype=float)
-
-        for (
-            geometry
-        ) in geometry_series:  # geometry_series is a GeoSeries of Shapely geometries
-            if geometry is None or geometry.is_empty:
-                continue
-
-            current_geom_img_coords_x = []
-            current_geom_img_coords_y = []
-
-            if isinstance(geometry, LineString):
-                points_on_line = self.interpolate_line(geometry, sample_distance)
-                if points_on_line:
-                    world_x = [p.x for p in points_on_line]
-                    world_y = [p.y for p in points_on_line]
-                    img_x, img_y = self.world_to_image(
-                        np.array(world_x), np.array(world_y)
-                    )
-                    current_geom_img_coords_x.extend(img_x)
-                    current_geom_img_coords_y.extend(img_y)
-
-            elif isinstance(geometry, shapely.geometry.Polygon):
-                if infill_geometries:
-                    ext_coords_world = np.array(list(geometry.exterior.coords))
-                    ext_coords_img_x_arr, ext_coords_img_y_arr = self.world_to_image(
-                        ext_coords_world[:, 0], ext_coords_world[:, 1]
-                    )
-                    # skimage.draw.polygon expects (row, col) which is (y, x)
-                    rr, cc = ski_polygon(
-                        ext_coords_img_y_arr, ext_coords_img_x_arr, shape=heatmap.shape
-                    )
-                    current_geom_img_coords_y.extend(rr)
-                    current_geom_img_coords_x.extend(cc)
-                else:  # Only outline
-                    points_on_exterior = self.interpolate_line(
-                        geometry.exterior, sample_distance
-                    )
-                    if points_on_exterior:
-                        world_x = [p.x for p in points_on_exterior]
-                        world_y = [p.y for p in points_on_exterior]
-                        img_x, img_y = self.world_to_image(
-                            np.array(world_x), np.array(world_y)
-                        )
-                        current_geom_img_coords_x.extend(img_x)
-                        current_geom_img_coords_y.extend(img_y)
-
-                for interior in geometry.interiors:
-                    interior_coords_world = np.array(list(interior.coords))
-                    interior_coords_img_x, interior_coords_img_y = self.world_to_image(
-                        interior_coords_world[:, 0], interior_coords_world[:, 1]
-                    )
-                    for ix, iy in zip(interior_coords_img_x, interior_coords_img_y):
-                        if (
-                            ix in current_geom_img_coords_x
-                            and iy in current_geom_img_coords_y
-                        ):
-                            idx = current_geom_img_coords_x.index(ix)
-                            if current_geom_img_coords_y[idx] == iy:
-                                current_geom_img_coords_x.pop(idx)
-                                current_geom_img_coords_y.pop(idx)
-            else:
-                log.warning(
-                    f"Unsupported geometry type for heatmap: {type(geometry)} for feature {feature_key}"
-                )
-                continue
-
-            if current_geom_img_coords_x:  # If any points were generated
-                valid_indices = [
-                    i
-                    for i, (x, y) in enumerate(
-                        zip(current_geom_img_coords_x, current_geom_img_coords_y)
-                    )
-                    if 0 <= x < heatmap.shape[1] and 0 <= y < heatmap.shape[0]
-                ]
-                if valid_indices:
-                    valid_x = np.array(current_geom_img_coords_x)[valid_indices]
-                    valid_y = np.array(current_geom_img_coords_y)[valid_indices]
-                    heatmap[valid_y, valid_x] = 1  # Mark presence
-
-        return heatmap
 
     def get_combined_heatmap(self, sigma_features=None, alpha_features=None):
         if not self.heatmaps:  # If heatmaps dict is empty
