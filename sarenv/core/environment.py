@@ -380,24 +380,17 @@ class Environment:
 
     def generate_heatmaps(self):
         log.info("Generating heatmaps for all features...")
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            tasks = [
-                (
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_to_key = {
+                # Pass feature_gdf.geometry (which is a GeoSeries)
+                executor.submit(
+                    self.generate_heatmap,
                     key,
                     feature_gdf.geometry,
                     self.sample_distance,
-                    self.xedges,
-                    self.yedges,
-                    self.meter_per_bin,
-                    self.minx,
-                    self.miny,
-                    self.buffer_val,
-                )
+                ): key
                 for key, feature_gdf in self.features.items()
                 if feature_gdf is not None and not feature_gdf.empty
-            ]
-            future_to_key = {
-                executor.submit(generate_heatmap_task, *task): task[0] for task in tasks
             }
             for future in concurrent.futures.as_completed(future_to_key):
                 key = future_to_key[future]
@@ -408,10 +401,9 @@ class Environment:
                 except Exception as exc:
                     log.error(
                         f"Error generating heatmap for {key}: {exc}", exc_info=True
-                    )
+                    )  # Log full traceback
                     self.heatmaps[key] = None
         log.info("Heatmap generation complete.")
-
 
     def generate_heatmap(
         self,
