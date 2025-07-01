@@ -115,7 +115,7 @@ class DatasetLoader:
         # 2. Create coordinate grids for the master heatmap
         h, w = self._master_heatmap.shape
         master_minx, master_miny, _, _ = self._bounds
-        
+
         y_indices, x_indices = np.mgrid[0:h, 0:w]
         x_coords_world = (x_indices * self._meter_per_bin) + master_minx
         y_coords_world = (y_indices * self._meter_per_bin) + master_miny
@@ -135,7 +135,7 @@ class DatasetLoader:
             feature_prob_map = np.ones_like(self._master_heatmap)
         else:
             feature_prob_map = self._master_heatmap / feature_heatmap_sum
-        
+
         # 4. Combine the probabilities and NORMALIZE the entire master map
         combined_map_unnormalized = bell_curve_map * feature_prob_map
         total_sum = np.sum(combined_map_unnormalized)
@@ -143,7 +143,7 @@ class DatasetLoader:
             self._combined_master_map = combined_map_unnormalized / total_sum
         else:
             self._combined_master_map = combined_map_unnormalized # remains zeros
-        
+
         log.info("Successfully generated and cached the normalized combined master map.")
         assert np.isclose(np.sum(self._combined_master_map), 1.0, atol=1e-6) or np.sum(self._combined_master_map) == 0
 
@@ -175,7 +175,7 @@ class DatasetLoader:
             )
             self._master_features_gdf_proj = self._master_features_gdf.to_crs(self._projected_crs)
             self._master_heatmap = np.load(self.master_heatmap_path)
-            
+
             # New: Generate the combined map
             self._generate_combined_master_map()
 
@@ -236,8 +236,12 @@ class DatasetLoader:
         clipping_circle_proj = clipping_point_proj.buffer(radius_km * 1000).iloc[0]
         clipped_bounds = clipping_circle_proj.bounds
 
+
         clipped_features_proj = gpd.clip(self._master_features_gdf_proj, clipping_circle_proj)
         log.info(f"Clipped features to {len(clipped_features_proj)} items for size '{size}'.")
+        # Check if any features were clipped and correct the probabilities of these features as the area may have changed
+
+
 
         # Get pixel boundaries for cropping the heatmap
         min_x_w, min_y_w, max_x_w, max_y_w = clipped_bounds

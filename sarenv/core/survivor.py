@@ -13,7 +13,7 @@ log = get_logger()
 
 class SurvivorLocationGenerator:
     """
-    Generates a plausible survivor location based on geographic features.
+    Generates plausible survivor locations based on geographic features.
     """
     def __init__(self, dataset_item: SARDatasetItem):
         self.dataset_item = dataset_item
@@ -26,13 +26,7 @@ class SurvivorLocationGenerator:
             log.warning("Features are empty or missing 'area_probability'. Cannot calculate weights.")
             return
 
-        total_prob_in_subset = self.features['area_probability'].sum()
-        if total_prob_in_subset > 0:
-            self.features['renormalized_prob'] = self.features['area_probability'] / total_prob_in_subset
-        else:
-            self.features['renormalized_prob'] = 0
-        
-        type_weights = self.features.groupby('feature_type')['renormalized_prob'].sum()
+        type_weights = self.features.groupby('feature_type')['area_probability'].sum()
         self.type_probabilities = type_weights.to_dict()
         log.info(f"Calculated feature type probabilities: {self.type_probabilities}")
 
@@ -43,26 +37,98 @@ class SurvivorLocationGenerator:
             if poly.contains(random_point):
                 return random_point
 
-    def generate_location(self) -> Point | None:
+    def generate_locations(self, n: int = 1) -> list[Point]:
+        """
+        Generate multiple plausible survivor locations.
+
+        Args:
+            n (int): Number of locations to generate.
+
+        Returns:
+            List of shapely.geometry.Point objects (may be fewer than n if not enough valid locations).
+        """
         if not self.type_probabilities:
-            log.error("No feature probabilities available. Cannot generate location.")
-            return None
+            log.error("No feature probabilities available. Cannot generate locations.")
+            return []
 
-        chosen_type = random.choices(list(self.type_probabilities.keys()), weights=list(self.type_probabilities.values()), k=1)[0]
-        type_gdf = self.features[self.features['feature_type'] == chosen_type]
-        
-        if type_gdf.empty or type_gdf['renormalized_prob'].sum() == 0:
-            return None
+        locations = []
+        attempts = 0
+        max_attempts = n * 10  # Prevent infinite loops
 
-        chosen_feature = type_gdf.sample(n=1, weights='renormalized_prob').iloc[0]
-        feature_buffer = chosen_feature.geometry.buffer(30)
-        
-        center_proj = gpd.GeoDataFrame(geometry=[Point(self.dataset_item.center_point)], crs="EPSG:4326").to_crs(self.features.crs).geometry.iloc[0]
+        center_proj = gpd.GeoDataFrame(
+            geometry=[Point(self.dataset_item.center_point)],
+            crs="EPSG:4326"
+        ).to_crs(self.features.crs).geometry.iloc[0]
         main_search_circle = center_proj.buffer(self.dataset_item.radius_km * 1000)
-        
-        final_search_area = feature_buffer.intersection(main_search_circle)
 
-        if final_search_area.is_empty:
-             return None
+        while len(locations) < n and attempts < max_attempts:
+            # Randomly choose a feature type based on the probabilities
+            chosen_type = random.choices(
+                list(self.type_probabilities.keys()),
+                weights=list(self.type_probabilities.values()),
+                k=1
+            )[0]
+            type_gdf = self.features[self.features['feature_type'] == chosen_type]
 
-        return self._generate_random_point_in_polygon(final_search_area)
+            if type_gdf.empty or type_gdf['area_probability'].sum() == 0:
+                attempts += 1
+                continue
+
+            chosen_feature = type_gdf.sample(n=1, weights='area_probability').iloc[0]
+            feature_buffer = chosen_feature.geometry.buffer(15)
+            final_search_area = feature_buffer.intersection(main_search_circle)
+
+            if final_search_area.is_empty:
+                attempts += 1
+                continue
+
+            point = self._generate_random_point_in_polygon(final_search_area)
+            if point:
+                locations.append(point)
+            attempts += 1
+
+        if len(locations) < n:
+            log.warning(f"Only generated {len(locations)} out of {n} requested locations.")
+
+        return locations
+
+    # For backward compatibility
+    def generate_location(self) -> Point | None:
+        locations = self.generate_locations(1)
+        return locations[0] if locations else None
+
+
+    # def generate_location(self) -> Point | None:
+    #     if not self.type_probabilities:
+    #         log.error("No feature probabilities available. Cannot generate location.")
+    #         return None
+
+    #     # Create projected center point and main search circle
+    #     center_proj = gpd.GeoDataFrame(geometry=[Point(self.dataset_item.center_point)], crs="EPSG:4326").to_crs(self.features.crs).geometry.iloc[0]
+    #     main_search_circle = center_proj.buffer(self.dataset_item.radius_km * 1000)
+
+    #     # Step 1: Sample a random point inside the main search circle
+    #     random_point = self._generate_random_point_in_polygon(main_search_circle)
+    #     if not random_point:
+    #         return None
+
+    #     # Step 2: Create a 100m buffer around that point
+    #     local_buffer = gpd.GeoDataFrame(geometry=[random_point], crs=self.features.crs).buffer(100).iloc[0]
+
+    #     # Step 3: Extract intersecting features
+    #     intersecting_features = self.features[self.features.geometry.intersects(local_buffer)].copy()
+
+    #     if intersecting_features.empty or intersecting_features['area_probability'].sum() == 0:
+    #         return None
+
+    #     # Step 4: Sample one feature based on area_probability
+    #     chosen_feature = intersecting_features.sample(n=1, weights='area_probability').iloc[0]
+
+    #     # Step 5: Intersect feature buffer with the 100m buffer and sample a final point
+    #     feature_buffer = chosen_feature.geometry.buffer(10)
+    #     final_search_area = feature_buffer.intersection(local_buffer)
+
+    #     if final_search_area.is_empty:
+    #         return None
+
+    #     return self._generate_random_point_in_polygon(final_search_area)

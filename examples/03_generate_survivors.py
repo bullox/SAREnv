@@ -40,19 +40,12 @@ def run_survivor_generation_example(num_locations=1000, size_to_load="small"):
 
         # 3. Generate survivor locations
         log.info(f"Generating {num_locations} survivor locations...")
-        locations = []
-        for i in range(num_locations):
-            location = survivor_generator.generate_location()
-            if location:
-                log.info(f"Generated location {i+1}: {location.wkt}")
-                locations.append(location)
-            else:
-                log.warning(f"Failed to generate location {i+1}.")
+        locations = survivor_generator.generate_locations(num_locations)
 
         if not locations:
             log.error("No survivor locations were generated. Cannot visualize.")
             return
-            
+
         # 4. Visualize the results
         log.info("Visualizing the generated locations...")
         fig, ax = plt.subplots(figsize=(15, 15))

@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 import rasterio
 import shapely
-from scipy.ndimage import gaussian_filter
 from shapely.geometry import LineString, Point
 from skimage.draw import (
     polygon as ski_polygon,
@@ -19,7 +18,7 @@ from ..io.osm_query import query_features
 from ..utils import (
     logging_setup,
 )
-from ..utils.geo import image_to_world, world_to_image
+from ..utils.geo import image_to_world, world_to_image, get_utm_epsg
 from .geometries import GeoPolygon
 
 log = logging_setup.get_logger()
@@ -431,7 +430,7 @@ class Environment:
             return None
 
         # Get the bounding box in WGS84
-        
+
         minx, miny, maxx, maxy = self.polygon.set_crs("EPSG:4326").geometry.bounds
         output_path = os.path.join(output_dir, "temp_dem.tif")
         log.info(
@@ -451,7 +450,7 @@ class Environment:
                 x_centers = (self.xedges[:-1] + self.xedges[1:]) / 2
                 y_centers = (self.yedges[:-1] + self.yedges[1:]) / 2
                 xv, yv = np.meshgrid(x_centers, y_centers)
-                
+
                 points_proj = [Point(x, y) for x, y in zip(xv.ravel(), yv.ravel())]
                 grid_gdf_proj = gpd.GeoDataFrame(geometry=points_proj, crs=self.projected_crs)
 
@@ -461,13 +460,13 @@ class Environment:
 
                 # Sample the raster
                 elevations = [val[0] for val in dem_dataset.sample(coords)]
-                
+
                 # Reshape the flat list of elevations into a 2D grid
                 heightmap_grid = np.array(elevations).reshape(len(y_centers), len(x_centers))
                 self.heightmap = heightmap_grid
                 log.info(f"Successfully generated heightmap with shape {self.heightmap.shape}")
                 return self.heightmap
-        
+
         except Exception as e:
             log.error(f"Failed to generate heightmap from local DEM: {e}", exc_info=True)
             return None
@@ -524,12 +523,6 @@ class DataGenerator:
             "xlarge": 9.9,
         }
 
-    def _get_utm_epsg(self, lon: float, lat: float) -> str:
-        """Calculates the appropriate UTM zone EPSG code for a given point."""
-        zone = int((lon + 180) / 6) + 1
-        epsg_code = f"326{zone}" if lat >= 0 else f"327{zone}"
-        log.info(f"Determined UTM zone for point ({lon}, {lat}) as EPSG:{epsg_code}")
-        return f"EPSG:{epsg_code}"
 
     def _create_circular_polygon(
         self, center_lon: float, center_lat: float, radius_km: float
@@ -538,7 +531,7 @@ class DataGenerator:
         point = shapely.Point(center_lon, center_lat)
         gdf = gpd.GeoDataFrame([1], geometry=[point], crs="EPSG:4326")
 
-        projected_crs = self._get_utm_epsg(center_lon, center_lat)
+        projected_crs = get_utm_epsg(center_lon, center_lat)
         gdf_proj = gdf.to_crs(projected_crs)
 
         radius_meters = radius_km * 1000
@@ -557,7 +550,7 @@ class DataGenerator:
         """Generates a single Environment object for a given location and size."""
         center_lon, center_lat = center_point
         radius_km = self.size_radii_km[size]
-        projected_crs = self._get_utm_epsg(center_lon, center_lat)
+        projected_crs = get_utm_epsg(center_lon, center_lat)
 
         log.info(
             f"Generating data for center ({center_lon:.4f}, {center_lat:.4f}) with size '{size}' (radius: {radius_km} km)."
@@ -629,28 +622,21 @@ class DataGenerator:
 
         log.info("Calculating area-weighted probabilities for master features...")
 
-        def get_influence_area(geom):
+        def get_area(geom):
             if isinstance(geom, shapely.Polygon):
                 return geom.area
             elif isinstance(geom, LineString):
                 return geom.buffer(15).area #TODO this should be defined somewhere
             return 0
 
-        master_features_gdf["influence_area"] = master_features_gdf.geometry.apply(
-            get_influence_area
-        )
+        master_features_gdf["area"] = master_features_gdf.geometry.apply(get_area)
 
         # Normalize by the sum of all influence areas
-        total_influence_area = master_features_gdf["influence_area"].sum()
-
-        if total_influence_area > 0:
-            master_features_gdf["area_probability"] = (
-                master_features_gdf["influence_area"] / total_influence_area
-            )
+        master_features_gdf["area_probability"] = master_features_gdf["area"] * master_features_gdf["feature_type"].map(FEATURE_PROBABILITIES)
+        if master_features_gdf["area_probability"].sum() != 0:
+            master_features_gdf["area_probability"] /= master_features_gdf["area_probability"].sum()
         else:
             master_features_gdf["area_probability"] = 0
-
-        log.info("Finished calculating area-weighted probabilities.")
 
         # 3. Export the combined features GeoDataFrame with metadata
         geojson_path = os.path.join(output_directory, "features.geojson")
@@ -659,7 +645,7 @@ class DataGenerator:
         # Ensure final export is in WGS84 for broad compatibility
         master_features_gdf.to_crs("EPSG:4326", inplace=True)
         geojson_dict = master_features_gdf.__geo_interface__
-        
+
         geojson_dict["center_point"] = center_point
         geojson_dict["meter_per_bin"] = meter_per_bin
         geojson_dict["radius_km"] = self.size_radii_km["xlarge"]
