@@ -28,7 +28,7 @@ def run_survivor_generation_example(num_locations=1000, size_to_load="small"):
         # 1. Load the dataset for a specific size
         log.info(f"Loading data for size: '{size_to_load}'")
         loader = DatasetLoader(dataset_directory=dataset_dir)
-        dataset_item = loader.load_size(size_to_load)
+        dataset_item = loader.load_environment(size_to_load)
 
         if not dataset_item:
             log.error(f"Could not load the dataset for size '{size_to_load}'.")

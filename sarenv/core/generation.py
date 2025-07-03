@@ -19,23 +19,12 @@ from ..utils import (
     logging_setup,
 )
 from ..utils.geo import image_to_world, world_to_image, get_utm_epsg
+from ..utils.lost_person_behavior import get_environment_radius_by_size
 from .geometries import GeoPolygon
 
 log = logging_setup.get_logger()
 EPS = 1e-9
-
-FEATURE_PROBABILITIES ={
-            "linear": 0.25,
-            "field": 0.14,
-            "structure": 0.13,
-            "road": 0.13,
-            "drainage": 0.12,
-            "water": 0.08,
-            "brush": 0.02,
-            "scrub": 0.03,
-            "woodland": 0.07,
-            "rock": 0.04,
-        }
+from ..utils.lost_person_behavior import FEATURE_PROBABILITIES, CLIMATE_TEMPERATE, CLIMATE_DRY, ENVIRONMENT_TYPE_FLAT, ENVIRONMENT_TYPE_MOUNTAINOUS
 
 def process_feature_osm(key_val_pair, query_polygon_wgs84, projected_crs):
     """
@@ -516,12 +505,6 @@ class DataGenerator:
         for feature_category, osm_tags in self.tags_mapping.items():
             self._builder.set_feature(feature_category, osm_tags)
 
-        self.size_radii_km = {
-            "small": 0.6,
-            "medium": 1.8,
-            "large": 3.2,
-            "xlarge": 9.9,
-        }
 
 
     def _create_circular_polygon(
@@ -545,11 +528,11 @@ class DataGenerator:
         return circle_gdf_wgs84.geometry.iloc[0]
 
     def generate_environment(
-        self, center_point: tuple[float, float], size: str, meter_per_bin: int = 30
+        self, center_point: tuple[float, float], size: str,environment_climate, environment_type, meter_per_bin: int = 30
     ) -> "Environment | None":
         """Generates a single Environment object for a given location and size."""
         center_lon, center_lat = center_point
-        radius_km = self.size_radii_km[size]
+        radius_km = get_environment_radius_by_size(environment_type, environment_climate,size)
         projected_crs = get_utm_epsg(center_lon, center_lat)
 
         log.info(
@@ -575,6 +558,8 @@ class DataGenerator:
         self,
         center_point: tuple[float, float],
         output_directory: str,
+        environment_type,
+        environment_climate,
         meter_per_bin: int = 30,
     ):
         """
@@ -595,7 +580,7 @@ class DataGenerator:
             "--- Generating master environment for the largest radius ('xlarge') ---"
         )
 
-        master_env = self.generate_environment(center_point, "xlarge", meter_per_bin)
+        master_env = self.generate_environment(center_point, "xlarge", environment_climate, environment_type, meter_per_bin)
         if not master_env:
             log.error("Failed to generate the master environment. Aborting export.")
             return
@@ -645,10 +630,11 @@ class DataGenerator:
         # Ensure final export is in WGS84 for broad compatibility
         master_features_gdf.to_crs("EPSG:4326", inplace=True)
         geojson_dict = master_features_gdf.__geo_interface__
-
+        geojson_dict["environment_type"] = environment_type
+        geojson_dict["climate"] = environment_climate
         geojson_dict["center_point"] = center_point
         geojson_dict["meter_per_bin"] = meter_per_bin
-        geojson_dict["radius_km"] = self.size_radii_km["xlarge"]
+        geojson_dict["radius_km"] = get_environment_radius_by_size(environment_type, environment_climate, "xlarge")
         geojson_dict["bounds"] = [
             master_env.minx,
             master_env.miny,

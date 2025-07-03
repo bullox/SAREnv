@@ -41,10 +41,11 @@ def visualize_heatmap(item: SARDatasetItem, plot_basemap: bool = True):
         cx.add_basemap(ax, crs=data_crs, source=cx.providers.OpenStreetMap.Mapnik, alpha=0.7)
 
     # Updated title to use 'size'
-    ax.set_title(f"Heatmap Visualization: Size '{item.size}'")
+    # ax.set_title(f"Heatmap Visualization: Size '{item.size}'")
     ax.set_xlabel("Easting (meters)")
     ax.set_ylabel("Northing (meters)")
     plt.tight_layout()
+    plt.savefig(f"heatmap_{item.size}.png")
 
 
 def visualize_features(item: SARDatasetItem, plot_basemap: bool = True):
@@ -92,11 +93,12 @@ def visualize_features(item: SARDatasetItem, plot_basemap: bool = True):
 
     ax.legend(handles=legend_handles, title="Legend", loc="upper left")
     # Updated title to use 'size'
-    ax.set_title(f"Nested Dataset Visualization (Base: {item.size})")
+    # ax.set_title(f"Nested Dataset Visualization (Base: {item.size})")
     ax.set_xlabel("Easting (meters)")
     ax.set_ylabel("Northing (meters)")
 
     plt.tight_layout()
+    plt.savefig(f"features_{item.size}.png")
     plt.plot()
 
 
@@ -114,7 +116,7 @@ def run_loading_example():
         loader = DatasetLoader(dataset_directory=dataset_dir)
 
         log.info(f"Loading data for size: '{size_to_load}'")
-        item = loader.load_size(size_to_load)
+        item = loader.load_environment(size_to_load)
 
         if item:
             # Call the new all-in-one visualization function

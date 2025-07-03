@@ -27,7 +27,7 @@ class SurvivorLocationGenerator:
             return
 
         type_weights = self.features.groupby('feature_type')['area_probability'].sum()
-        self.type_probabilities = type_weights.to_dict()
+        self.type_probabilities = type_weights.to_dict() 
         log.info(f"Calculated feature type probabilities: {self.type_probabilities}")
 
     def _generate_random_point_in_polygon(self, poly: Polygon) -> Point:

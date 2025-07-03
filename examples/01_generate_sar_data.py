@@ -4,10 +4,15 @@ import numpy as np
 import geopandas as gpd
 from sarenv import (
     DataGenerator,
+    CLIMATE_TEMPERATE,
+    CLIMATE_DRY,
+    ENVIRONMENT_TYPE_FLAT,
+    ENVIRONMENT_TYPE_MOUNTAINOUS,
     get_logger,
 )
 
 log = get_logger()
+
 
 def run_export_example():
     """
@@ -21,13 +26,15 @@ def run_export_example():
 
     # 2. Define a center point and an output directory for the dataset.
     # odense_center_point = (10.3883, 55.3948)
-    svanninge_bakker = 10.289470,55.145921
+    svanninge_bakker = 10.289470, 55.145921
     output_dir = "sarenv_dataset"
 
     # 3. Run the main export function.
     data_gen.export_dataset(
         center_point=svanninge_bakker,
         output_directory=output_dir,
+        environment_climate=CLIMATE_TEMPERATE,
+        environment_type=ENVIRONMENT_TYPE_FLAT,
         meter_per_bin=30,
     )
 
@@ -39,14 +46,16 @@ def run_export_example():
 
         if os.path.exists(master_heatmap_path):
             heatmap_matrix = np.load(master_heatmap_path)
-            log.info(f"Loaded heatmap 'heatmap_median.npy'. Shape: {heatmap_matrix.shape}")
+            log.info(f"Loaded heatmap 'heatmap.npy'. Shape: {heatmap_matrix.shape}")
             # You could now use this matrix for analysis or as input to a model.
         else:
             log.error(f"Verification failed: {master_heatmap_path} not found.")
 
         if os.path.exists(master_features_path):
             features_gdf = gpd.read_file(master_features_path)
-            log.info(f"Loaded features 'features_median.geojson'. Found {len(features_gdf)} features.")
+            log.info(
+                f"Loaded features 'features.geojson'. Found {len(features_gdf)} features."
+            )
             log.info("Sample of loaded features:")
             print(features_gdf.head())
         else:

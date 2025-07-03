@@ -30,7 +30,7 @@ def run_evaluation():
     try:
         # 1. Load Data
         loader = sarenv.DatasetLoader(dataset_directory=DATASET_DIR)
-        item = loader.load_size(EVALUATION_SIZE)
+        item = loader.load_environment(EVALUATION_SIZE)
         if not item:
             log.error(f"Could not load data. Please run '01_generate_dataset.py' first.")
             return
