@@ -12,7 +12,7 @@ from sarenv import (
 from sarenv.utils.geo import get_utm_epsg
 from sarenv.utils.plot import DEFAULT_COLOR, FEATURE_COLOR_MAP
 from shapely.geometry import Point
-
+from sarenv.utils.lost_person_behavior import get_environment_radius
 log = get_logger()
 
 
@@ -62,6 +62,8 @@ def visualize_features(item: SARDatasetItem, plot_basemap: bool = True):
         return
 
     # Sort items by radius to easily find the largest one
+    radii = get_environment_radius(item.environment_type, item.environment_climate)
+    
     log.info(f"Generating nested visualization using '{item.size}' as the base...")
     center_point_gdf = gpd.GeoDataFrame(
         geometry=[Point(item.center_point)], crs="EPSG:4326"
@@ -76,20 +78,19 @@ def visualize_features(item: SARDatasetItem, plot_basemap: bool = True):
         data.plot(ax=ax, color=color, label=feature_type.capitalize(), alpha=0.7)
         legend_handles.append(Patch(color=color, label=feature_type.capitalize()))
 
-    radius_circle = center_point_proj.buffer(item.radius_km * 1000).iloc[0]
-
-
-    gpd.GeoSeries([radius_circle], crs=data_crs).boundary.plot(
-        ax=ax, edgecolor="blue", linestyle="--", linewidth=2.5
-    )
-
-    # Create a legend handle for the radius (updated to use 'size')
-    label = f"Radius: {item.size} ({item.radius_km} km)"
-    legend_handles.append(
-        Line2D([0], [0], color=color, lw=2.5, linestyle="--", label=label)
-    )
     if plot_basemap:
         cx.add_basemap(ax, crs=item.features.crs.to_string(), source=cx.providers.OpenStreetMap.Mapnik)
+
+    colors = ["blue", "orange", "red", "green"]
+    for idx, r in enumerate(radii):
+        circle = center_point_proj.buffer(r * 1000).iloc[0]
+        color = colors[idx % len(colors)]
+        gpd.GeoSeries([circle], crs=data_crs).boundary.plot(
+            ax=ax, edgecolor=color, linestyle="--", linewidth=2, alpha=1)
+        label = f"Radius: {item.size} ({item.radius_km} km)"
+        legend_handles.append(
+            Line2D([0], [0], color=color, lw=2.5, linestyle="--", label=label)
+        )
 
     ax.legend(handles=legend_handles, title="Legend", loc="upper left")
     # Updated title to use 'size'

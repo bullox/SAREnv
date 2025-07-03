@@ -15,8 +15,14 @@ from sarenv.utils.logging_setup import get_logger
 from sarenv.utils.lost_person_behavior import (
     get_environment_radius,
     get_environment_radius_by_size,
+    ENVIRONMENT_TYPE_FLAT,
+    ENVIRONMENT_TYPE_MOUNTAINOUS,
+    CLIMATE_TEMPERATE,
+    CLIMATE_DRY,
 )
 
+from scipy.stats import norm, lognorm, gamma
+from scipy.optimize import minimize
 log = get_logger()
 
 @dataclass
@@ -38,7 +44,7 @@ class SARDatasetItem:
     bounds: Tuple[float, float, float, float]
     features: gpd.GeoDataFrame
     heatmap: np.ndarray
-    climate: str
+    environment_climate: str
     environment_type: str
 
 class DatasetLoader:
@@ -95,36 +101,38 @@ class DatasetLoader:
         zone = int((lon + 180) / 6) + 1
         return f"326{zone}" if lat >= 0 else f"327{zone}"
 
-    def _variance_estimation(self, climate, environment) -> tuple[float, float]:
-        # Given percentiles and corresponding values
+
+    def lognormal_distribution_estimation(self, climate, environment) -> tuple[float, float]:
+        """
+        Estimate the parameters (mu, sigma) of a log-normal distribution
+        given percentiles and corresponding values.
+        """
         percentiles = np.array([0.25, 0.5, 0.75, 0.95])
         values = get_environment_radius(environment, climate)
+        log_values = np.log(values)
         z_scores = norm.ppf(percentiles)
 
-        # Fit both mean (mu) and sigma using least squares: q_i ≈ mu + sigma * z_i
+        # Fit both mu and sigma using least squares: log(q_i) ≈ mu + sigma * z_i
         A = np.vstack([np.ones_like(z_scores), z_scores]).T
-        mu, sigma = np.linalg.lstsq(A, values, rcond=None)[0]
+        mu, sigma = np.linalg.lstsq(A, log_values, rcond=None)[0]
 
         # Calculate the error (root mean squared error between model and values)
-        model_values = mu + sigma * z_scores
-        error = np.sqrt(np.mean((model_values - values) ** 2))
-        print(f"Root mean squared error of fit: {error:.4f}")
-        print(f"Estimated mu: {mu:.4f}, sigma: {sigma:.4f}")
-        return abs(mu), abs(sigma)
-
+        model_log_values = mu + sigma * z_scores
+        error = np.sqrt(np.mean((model_log_values - log_values) ** 2))
+        log.info(f"Root mean squared error of log-normal fit: {error:.4f}")
+        log.info(f"Estimated log-normal mu: {mu:.4f}, sigma: {sigma:.4f}")
+        return mu, abs(sigma)
 
     def _generate_combined_master_map(self, environment_climate: str, environment_type: str):
         """
-        Generates a master probability map by combining a distance-based bell curve
+        Generates a master probability map by combining a distance-based log-normal curve
         with the feature-based heatmap. This is executed once and cached.
         """
-        log.info("Generating combined distance and feature probability master map...")
+        log.info("Generating combined distance (log-normal) and feature probability master map...")
 
-        # 1. Define the Bell Curve (2D Gaussian)
+        # 1. Define the Log-Normal Curve (radial)
+        mu, sigma = self.lognormal_distribution_estimation(environment_climate, environment_type)
 
-        ring_radius_km, sigma = self._variance_estimation(environment_climate, environment_type)  # meters
-        ring_radius_m = ring_radius_km * 1000 
-        
         # 2. Create coordinate grids for the master heatmap
         h, w = self._master_heatmap.shape
         master_minx, master_miny, _, _ = self._bounds
@@ -138,22 +146,25 @@ class DatasetLoader:
         center_x_world = center_point_proj.geometry.x.iloc[0]
         center_y_world = center_point_proj.geometry.y.iloc[0]
 
-        # 3. Compute distance from center to each grid point
+        # 3. Compute distance from center to each grid point (in meters)
         dist = np.sqrt((x_coords_world - center_x_world) ** 2 + (y_coords_world - center_y_world) ** 2)
+        dist_km = dist / 1000.0
+        # Avoid log(0) by setting a minimum distance
+        dist_km = np.clip(dist_km, 1e-6, None)
 
-        # 4. Ring-shaped Gaussian: peak at `ring_radius_m`, decaying on both sides
-        bell_curve_map = np.exp(-((dist - ring_radius_m) ** 2) / (2 * (sigma*1000) ** 2))
+        # 4. Log-normal PDF for each distance
+        bell_curve_map = (1 / (dist_km * sigma * np.sqrt(2 * np.pi))) * np.exp(-((np.log(dist_km) - mu) ** 2) / (2 * sigma ** 2))
 
         # 5. Normalize the original feature heatmap
         feature_heatmap_sum = np.sum(self._master_heatmap)
         if feature_heatmap_sum == 0:
-            log.warning("Master feature heatmap is all zeros. Combined map will be based on ring-shaped Gaussian only.")
+            log.warning("Master feature heatmap is all zeros. Combined map will be based on log-normal only.")
             feature_prob_map = np.ones_like(self._master_heatmap)
         else:
             feature_prob_map = self._master_heatmap / feature_heatmap_sum
 
-        # 6. Combine maps — this depends on your intent (multiply, average, max, etc.)
-        combined_map_unnormalized = bell_curve_map * feature_prob_map  # element-wise multiplication
+        # 6. Combine maps — element-wise multiplication
+        combined_map_unnormalized = bell_curve_map * feature_prob_map
 
         total_sum = np.sum(combined_map_unnormalized)
         if total_sum > 0:
@@ -161,7 +172,7 @@ class DatasetLoader:
         else:
             self._combined_master_map = combined_map_unnormalized # remains zeros
 
-        log.info("Successfully generated and cached the normalized combined master map.")
+        log.info("Successfully generated and cached the normalized combined master map (log-normal).")
         assert np.isclose(np.sum(self._combined_master_map), 1.0, atol=1e-6) or np.sum(self._combined_master_map) == 0
 
 
@@ -284,7 +295,7 @@ class DatasetLoader:
             bounds=clipped_bounds,
             features=clipped_features_proj,
             heatmap=final_heatmap,
-            climate=self._climate,
+            environment_climate=self._climate,
             environment_type=self._environment_type,
         )
 
