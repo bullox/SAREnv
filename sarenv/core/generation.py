@@ -586,6 +586,7 @@ class DataGenerator:
             return
 
         # 2. Combine all features from the master environment into one GeoDataFrame
+        # TODO do not include shapely points
         master_features_list = []
         for key, gdf in master_env.features.items():
             if gdf is not None and not gdf.empty:

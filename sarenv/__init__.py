@@ -3,6 +3,7 @@
 SARenv: A Python toolkit for generating, loading, and evaluating
 Search and Rescue environment data.
 """
+from .analytics.evaluator import ComparativeEvaluator
 from .core.generation import DataGenerator
 from .core.loading import DatasetLoader, SARDatasetItem
 from .core.survivor import SurvivorLocationGenerator
@@ -16,6 +17,7 @@ from .utils.lost_person_behavior import (
 )
 
 __all__ = [
+    "ComparativeEvaluator",
     "DataGenerator",
     "DatasetLoader",
     "SARDatasetItem",

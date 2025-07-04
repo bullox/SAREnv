@@ -15,7 +15,8 @@ def split_path_for_drones(path: LineString, num_drones: int) -> list[LineString]
         segments.append(substring(path, i * segment_length, (i + 1) * segment_length))
     return segments
 
-def generate_spiral_path(center_x: float, center_y: float, max_radius: float, fov_deg: float, altitude: float, overlap: float, num_drones: int, path_point_spacing_m: float) -> list[LineString]:
+# Add **kwargs to accept and ignore unused arguments
+def generate_spiral_path(center_x: float, center_y: float, max_radius: float, fov_deg: float, altitude: float, overlap: float, num_drones: int, path_point_spacing_m: float, **kwargs) -> list[LineString]:
     loop_spacing = (2 * altitude * np.tan(np.radians(fov_deg / 2))) * (1 - overlap)
     a = loop_spacing / (2 * np.pi)
     num_rotations = max_radius / loop_spacing
@@ -27,7 +28,8 @@ def generate_spiral_path(center_x: float, center_y: float, max_radius: float, fo
     full_path = LineString(zip(center_x + radius * np.cos(theta), center_y + radius * np.sin(theta)))
     return split_path_for_drones(full_path, num_drones)
 
-def generate_concentric_circles_path(center_x: float, center_y: float, max_radius: float, fov_deg: float, altitude: float, overlap: float, num_drones: int, path_point_spacing_m: float, transition_distance_m: float) -> list[LineString]:
+# Add **kwargs here as well for consistency
+def generate_concentric_circles_path(center_x: float, center_y: float, max_radius: float, fov_deg: float, altitude: float, overlap: float, num_drones: int, path_point_spacing_m: float, transition_distance_m: float, **kwargs) -> list[LineString]:
     radius_increment = (2 * altitude * np.tan(np.radians(fov_deg / 2))) * (1 - overlap)
     path_points, current_radius = [], radius_increment
     while current_radius <= max_radius:
@@ -46,7 +48,8 @@ def generate_concentric_circles_path(center_x: float, center_y: float, max_radiu
     full_path = LineString(path_points) if path_points else LineString()
     return split_path_for_drones(full_path, num_drones)
 
-def generate_pizza_zigzag_path(center_x: float, center_y: float, max_radius: float, num_drones: int, fov_deg: float, altitude: float, overlap: float, path_point_spacing_m: float, border_gap_m: float) -> list[LineString]:
+# Add **kwargs here too to handle arguments like 'transition_distance_m'
+def generate_pizza_zigzag_path(center_x: float, center_y: float, max_radius: float, num_drones: int, fov_deg: float, altitude: float, overlap: float, path_point_spacing_m: float, border_gap_m: float, **kwargs) -> list[LineString]:
     paths, section_angle_rad = [], 2 * np.pi / num_drones
     pass_width = (2 * altitude * np.tan(np.radians(fov_deg / 2))) * (1 - overlap)
     for i in range(num_drones):
