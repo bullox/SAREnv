@@ -69,7 +69,7 @@ def get_environment_radius_by_size(environment_type, environment_climate, size):
         raise ValueError(f"Invalid size: {size}. Expected one of ['small', 'medium', 'large', 'extra_large'].")
     return get_environment_radius(environment_type,environment_climate)[index]
 
-def get_available_sizes(self) -> list[str]:
+def get_available_sizes() -> list[str]:
     """Returns a list of all predefined size names."""
     # This assumes a standard set of sizes. If sizes can vary, this might need adjustment.
     return ["small", "medium", "large", "xlarge"]
