@@ -26,7 +26,6 @@ def run_export_example():
     data_gen = DataGenerator()
 
     # 2. Define a center point and an output directory for the dataset.
-    # odense_center_point = (10.3883, 55.3948)
     svanninge_bakker = 10.289470, 55.145921
     output_dir = "sarenv_dataset"
 

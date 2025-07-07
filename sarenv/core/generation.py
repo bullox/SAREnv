@@ -669,47 +669,22 @@ class DataGenerator:
         master_features_list = []
         for key, gdf in master_env.features.items():
             if gdf is not None and not gdf.empty:
-                # Exclude point geometries from the final feature set if needed
-                geom_types = gdf.geometry.type
-                if not all(t == "Point" for t in geom_types):
-                    temp_gdf = gdf.copy()
-                    temp_gdf["feature_type"] = key
-                    master_features_list.append(temp_gdf)
+                temp_gdf = gdf[~gdf.geometry.type.isin(["Point"])].copy()
+                temp_gdf["feature_type"] = key
+                master_features_list.append(temp_gdf)
 
         if not master_features_list:
             log.error(
                 "No features found in the master environment. No features file will be exported."
             )
             master_features_gdf = gpd.GeoDataFrame(
-                columns=["geometry", "feature_type"],
+                columns=["geometry", "feature_type", "environemnt_type", "climate"," center_point", "meter_per_bin", "radius_km","bounds",],
                 geometry="geometry",
                 crs=master_env.projected_crs,
             )
         else:
             master_features_gdf = pd.concat(master_features_list, ignore_index=True)
 
-
-        # 3. Export the combined features GeoDataFrame with metadata
-        geojson_path = os.path.join(output_directory, "features.geojson")
-        master_features_gdf.to_crs("EPSG:4326", inplace=True)
-        geojson_dict = master_features_gdf.__geo_interface__
-        geojson_dict["environment_type"] = environment_type
-        geojson_dict["climate"] = environment_climate
-        geojson_dict["center_point"] = center_point
-        geojson_dict["meter_per_bin"] = meter_per_bin
-        geojson_dict["radius_km"] = get_environment_radius_by_size(
-            environment_type, environment_climate, "xlarge"
-        )
-        geojson_dict["bounds"] = [
-            master_env.minx,
-            master_env.miny,
-            master_env.maxx,
-            master_env.maxy,
-        ]
-
-        with open(geojson_path, "w") as f:
-            json.dump(geojson_dict, f)
-        log.info(f"Exported {len(master_features_gdf)} features to {geojson_path}")
 
         # 4. Generate and export the master probability map
         log.info("--- Generating and exporting master probability map ---")
@@ -775,6 +750,78 @@ class DataGenerator:
             np.isclose(np.sum(final_probability_map), 1.0, atol=1e-6)
             or np.sum(final_probability_map) == 0
         )
+
+        log.info("Calculating area-weighted probabilities for master features...")
+
+        def calculate_distance_probability(geom, center_x, center_y, mu, sigma):
+            """Calculates log-normal probability based on distance to center."""
+            centroid = geom.centroid
+            dist_meters = np.sqrt(
+                (centroid.x - center_x) ** 2 + (centroid.y - center_y) ** 2
+            )
+            dist_km = max(dist_meters / 1000.0, 1e-6)  # Avoid log(0)
+
+            # Apply the log-normal probability density function
+            probability = (1 / (dist_km * sigma * np.sqrt(2 * np.pi))) * np.exp(
+                -((np.log(dist_km) - mu) ** 2) / (2 * sigma**2)
+            )
+            return probability
+
+        # Apply the function to get a probability score for each feature's distance
+        distance_prob = master_features_gdf.geometry.apply(
+            calculate_distance_probability,
+            args=(center_x_world, center_y_world, mu, sigma),
+        )
+
+        # Helper function to get the area of influence for features
+        def get_area(geom):
+            if isinstance(geom, shapely.Polygon):
+                return geom.area
+            elif isinstance(geom, LineString):
+                return geom.buffer(15).area  # Buffer lines to create an area
+            return 0
+
+        # Initial influence is area multiplied by the feature type's base probability
+        master_features_gdf["area"] = master_features_gdf.geometry.apply(get_area)
+        
+        area_influence = master_features_gdf["area"] * master_features_gdf[
+            "feature_type"
+        ].map(FEATURE_PROBABILITIES)
+
+        # Combine by multiplying the area influence by the distance probability
+        combined_probability = area_influence * distance_prob
+
+        # Normalize the final combined probability so it all sums to 1
+        total_prob_sum = combined_probability.sum()
+        if total_prob_sum > 0:
+            master_features_gdf["area_probability"] = (
+                combined_probability / total_prob_sum
+            )
+        else:
+            master_features_gdf["area_probability"] = 0  # Handle case where sum is zero
+        # 3. Export the combined features GeoDataFrame with metadata
+        geojson_path = os.path.join(output_directory, "features.geojson")
+        master_features_gdf.to_crs("EPSG:4326", inplace=True)
+        geojson_dict = master_features_gdf.__geo_interface__
+        
+        # Add metadata to the GeoJSON dictionary
+        geojson_dict["environment_type"] = environment_type
+        geojson_dict["climate"] = environment_climate
+        geojson_dict["center_point"] = center_point
+        geojson_dict["meter_per_bin"] = meter_per_bin
+        geojson_dict["radius_km"] = get_environment_radius_by_size(
+            environment_type, environment_climate, "xlarge"
+        )
+        geojson_dict["bounds"] = [
+            master_env.minx,
+            master_env.miny,
+            master_env.maxx,
+            master_env.maxy,
+        ]
+
+        with open(geojson_path, "w") as f:
+            json.dump(geojson_dict, f)
+        log.info(f"Exported {len(master_features_gdf)} features to {geojson_path}")
 
         heatmap_path = os.path.join(output_directory, "heatmap.npy")
         np.save(heatmap_path, final_probability_map)
