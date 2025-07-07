@@ -5,7 +5,7 @@ from shapely.geometry import Point
 import sarenv
 from sarenv.analytics import paths, metrics
 from sarenv.utils import geo, plot
-
+from sarenv.analytics.evaluator import ComparativeEvaluator
 log = sarenv.get_logger()
 
 # --- Parameters ---
@@ -44,7 +44,14 @@ def run_evaluation():
         victims_gdf = gpd.GeoDataFrame(geometry=victim_points, crs=data_crs) if victim_points else gpd.GeoDataFrame(columns=['geometry'], crs=data_crs)
 
         # 3. Setup for Path Generation and Evaluation
-        evaluator = metrics.PathEvaluator(item.heatmap, item.bounds, victims_gdf, FOV_DEGREES, ALTITUDE_METERS)
+        evaluator = metrics.PathEvaluator(
+            item.heatmap,
+            item.bounds,
+            victims_gdf,
+            FOV_DEGREES,
+            ALTITUDE_METERS,
+            loader._meter_per_bin
+        )        
         center_proj = gpd.GeoDataFrame(geometry=[Point(item.center_point)], crs="EPSG:4326").to_crs(data_crs).geometry.iloc[0]
         center_x, center_y = center_proj.x, center_proj.y
         max_radius_m = item.radius_km * 1000
@@ -84,4 +91,23 @@ def run_evaluation():
 
 
 if __name__ == "__main__":
-    run_evaluation()
+    # run_evaluation()
+
+    log.info("--- Initializing the Search and Rescue Toolkit ---")
+    data_dir = "sarenv_dataset"  # Path to the dataset directory
+
+    # 1. Initialize the evaluator
+    evaluator = ComparativeEvaluator(
+        dataset_directory=data_dir,
+        evaluation_sizes=["large"], # Use a single size for a quick test
+        num_drones=10,
+        num_missing_persons=100,
+    )
+
+    # 2. Run the evaluations
+    baseline_results = evaluator.run_baseline_evaluations()
+
+    # 3. Plot the results from the baseline run
+    if baseline_results is not None and not baseline_results.empty:
+        evaluator.plot_results(baseline_results)
+        log.info("--- Toolkit execution finished successfully! ---")

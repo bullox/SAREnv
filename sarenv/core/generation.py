@@ -752,7 +752,6 @@ class DataGenerator:
         )
 
         log.info("Calculating area-weighted probabilities for master features...")
-
         def calculate_distance_probability(geom, center_x, center_y, mu, sigma):
             """Calculates log-normal probability based on distance to center."""
             centroid = geom.centroid
@@ -783,11 +782,8 @@ class DataGenerator:
 
         # Initial influence is area multiplied by the feature type's base probability
         master_features_gdf["area"] = master_features_gdf.geometry.apply(get_area)
+        area_influence = master_features_gdf["area"] * master_features_gdf["feature_type"].map(FEATURE_PROBABILITIES)
         
-        area_influence = master_features_gdf["area"] * master_features_gdf[
-            "feature_type"
-        ].map(FEATURE_PROBABILITIES)
-
         # Combine by multiplying the area influence by the distance probability
         combined_probability = area_influence * distance_prob
 
