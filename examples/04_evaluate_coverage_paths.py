@@ -39,7 +39,7 @@ def run_evaluation():
         
         # 2. Generate Victim Locations
         log.info(f"Generating {NUM_VICTIMS} victim locations...")
-        victim_generator = sarenv.SurvivorLocationGenerator(item)
+        victim_generator = sarenv.LostPersonLocationGenerator(item)
         victim_points = [p for p in (victim_generator.generate_location() for _ in range(NUM_VICTIMS)) if p]
         victims_gdf = gpd.GeoDataFrame(geometry=victim_points, crs=data_crs) if victim_points else gpd.GeoDataFrame(columns=['geometry'], crs=data_crs)
 

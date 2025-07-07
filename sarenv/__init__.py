@@ -6,7 +6,7 @@ Search and Rescue environment data.
 from .analytics.evaluator import ComparativeEvaluator
 from .core.generation import DataGenerator
 from .core.loading import DatasetLoader, SARDatasetItem
-from .core.survivor import SurvivorLocationGenerator
+from .core.lost_person import LostPersonLocationGenerator
 from .utils.logging_setup import get_logger
 from .utils.lost_person_behavior import (
     FEATURE_PROBABILITIES,
@@ -21,7 +21,7 @@ __all__ = [
     "DataGenerator",
     "DatasetLoader",
     "SARDatasetItem",
-    "SurvivorLocationGenerator",
+    "LostPersonLocationGenerator",
     "get_logger",
     ENVIRONMENT_TYPE_FLAT,
     ENVIRONMENT_TYPE_MOUNTAINOUS,

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from sarenv import (
     DatasetLoader,
-    SurvivorLocationGenerator,
+    LostPersonLocationGenerator,
     get_logger,
 )
 from sarenv.utils.plot import DEFAULT_COLOR, FEATURE_COLOR_MAP
@@ -36,7 +36,7 @@ def run_survivor_generation_example(num_locations=1000, size_to_load="small"):
 
         # 2. Initialize the survivor location generator with the loaded data
         log.info("Initializing the SurvivorLocationGenerator.")
-        survivor_generator = SurvivorLocationGenerator(dataset_item)
+        survivor_generator = LostPersonLocationGenerator(dataset_item)
 
         # 3. Generate survivor locations
         log.info(f"Generating {num_locations} survivor locations...")

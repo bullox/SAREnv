@@ -11,7 +11,7 @@ from sarenv.utils.logging_setup import get_logger
 
 log = get_logger()
 
-class SurvivorLocationGenerator:
+class LostPersonLocationGenerator:
     """
     Generates plausible survivor locations based on geographic features.
     """
