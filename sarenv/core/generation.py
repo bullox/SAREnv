@@ -688,6 +688,7 @@ class DataGenerator:
         else:
             master_features_gdf = pd.concat(master_features_list, ignore_index=True)
 
+
         # 3. Export the combined features GeoDataFrame with metadata
         geojson_path = os.path.join(output_directory, "features.geojson")
         master_features_gdf.to_crs("EPSG:4326", inplace=True)

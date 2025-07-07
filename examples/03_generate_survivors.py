@@ -86,4 +86,4 @@ def run_survivor_generation_example(num_locations=1000, size_to_load="small"):
 
 if __name__ == "__main__":
     # Before running this, ensure you have run basic_usage_example.py to create the dataset
-    run_survivor_generation_example()
+    run_survivor_generation_example(num_locations=1000, size_to_load="xlarge")
