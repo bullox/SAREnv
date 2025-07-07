@@ -110,4 +110,3 @@ if __name__ == "__main__":
     # 3. Plot the results from the baseline run
     if baseline_results is not None and not baseline_results.empty:
         evaluator.plot_results(baseline_results)
-        log.info("--- Toolkit execution finished successfully! ---")

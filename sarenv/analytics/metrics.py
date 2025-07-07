@@ -35,7 +35,7 @@ class PathEvaluator:
         x_range = np.linspace(minx, maxx, heatmap.shape[1])
         self.interpolator = RegularGridInterpolator((y_range, x_range), heatmap, bounds_error=False, fill_value=0)
 
-    def calculate_all_metrics(self, paths: list[LineString], discount_factor: float = 0.999) -> dict:
+    def calculate_all_metrics(self, paths: list[LineString], discount_factor) -> dict:
         """
         Calculates all metrics for a given list of paths by processing the
         points along the paths only once.

@@ -63,7 +63,6 @@ class ComparativeEvaluator:
             "transition_distance_m": 50.0,
             "border_gap_m": 15.0,
             "num_drones": self.num_drones,
-            "discount_factor": 0.999 # Default discount factor for time-discounted score
         }
 
         # Register baseline algorithms
@@ -164,10 +163,13 @@ class ComparativeEvaluator:
                 log.info(f"Running {name} algorithm on '{size}' dataset...")
                 generated_paths = generator(current_path_args)
 
-                # Call the single, optimized function to get all metrics
+                # Find the maximum length (number of waypoints) among all generated paths
+                t_end = max(len(path) for path in generated_paths) if generated_paths else 0
+                discount_factor = (0.05) ** (1 / t_end) if t_end > 0 else 0.999
+
                 all_metrics = evaluator.calculate_all_metrics(
                     generated_paths,
-                    discount_factor=self.path_params["discount_factor"]
+                    0.999# discount_factor
                 )
                 
                 # Extract results from the returned dictionary
