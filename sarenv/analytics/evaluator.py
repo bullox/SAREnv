@@ -67,6 +67,7 @@ class ComparativeEvaluator:
 
         # Register baseline algorithms
         self.baseline_generators = {
+            "Greedy": lambda args: paths.generate_greedy_path(**args),
             "Spiral": lambda args: paths.generate_spiral_path(**args),
             "Concentric": lambda args: paths.generate_concentric_circles_path(**args),
             "Pizza": lambda args: paths.generate_pizza_zigzag_path(**args),
@@ -156,6 +157,8 @@ class ComparativeEvaluator:
                     "center_x": center_proj.x,
                     "center_y": center_proj.y,
                     "max_radius": item.radius_km * 1000,
+                    "probability_map": item.heatmap,
+                    "bounds": item.bounds
                 }
             )
 
@@ -163,9 +166,9 @@ class ComparativeEvaluator:
                 log.info(f"Running {name} algorithm on '{size}' dataset...")
                 generated_paths = generator(current_path_args)
 
-                # Find the maximum length (number of waypoints) among all generated paths
-                t_end = max(len(path) for path in generated_paths) if generated_paths else 0
-                discount_factor = (0.05) ** (1 / t_end) if t_end > 0 else 0.999
+                # # Find the maximum length (number of waypoints) among all generated paths
+                # t_end = max(len(path) for path in generated_paths) if generated_paths else 0
+                # discount_factor = (0.05) ** (1 / t_end) if t_end > 0 else 0.999
 
                 all_metrics = evaluator.calculate_all_metrics(
                     generated_paths,

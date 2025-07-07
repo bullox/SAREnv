@@ -67,3 +67,75 @@ def generate_pizza_zigzag_path(center_x: float, center_y: float, max_radius: flo
             radius += pass_width; direction *= -1
         if len(points) > 1: paths.append(LineString(points))
     return paths
+
+def generate_greedy_path(center_x: float, center_y: float, num_drones: int, probability_map:np.ndarray, bounds:tuple, **kwargs) -> list[LineString]:
+    """
+    Generates paths for multiple drones using a greedy algorithm on a probability map.
+
+    Each drone starts at a specified center coordinate and iteratively moves to the adjacent
+    (including diagonal) grid cell with the highest probability value that has not been
+    visited by any other drone. The simulation runs for a number of steps equal to the
+    total number of cells in the map.
+    """
+    height, width = probability_map.shape
+    num_steps = (height * width)*10
+    minx, miny, maxx, maxy = bounds
+
+    if maxx <= minx or maxy <= miny:
+        # Return empty paths if bounds are invalid
+        return [LineString() for _ in range(num_drones)]
+
+    # Create arrays that map a grid index to the real-world coordinate of the cell's center
+    x_map = np.linspace(minx + (maxx - minx) / (2 * width), maxx - (maxx - minx) / (2 * width), width)
+    y_map = np.linspace(miny + (maxy - miny) / (2 * height), maxy - (maxy - miny) / (2 * height), height)
+
+    # Convert the real-world starting coordinates to grid indices
+    start_col = int(((center_x - minx) / (maxx - minx)) * width)
+    start_row = int(((center_y - miny) / (maxy - miny)) * height)
+
+    # Clamp indices to ensure they are within the valid grid dimensions
+    start_pos = (np.clip(start_row, 0, height - 1), np.clip(start_col, 0, width - 1))
+
+    # --- Grid-based simulation starts here ---
+    visited = np.zeros_like(probability_map, dtype=bool)
+    current_positions = [start_pos] * num_drones
+    # Store paths as lists of (row, col) indices
+    paths = [[pos] for pos in current_positions]
+    visited[start_pos] = True
+
+    # Loop for a fixed number of steps
+    for _ in range(num_steps):
+        for i in range(num_drones):
+            current_r, current_c = current_positions[i]
+            best_neighbor = None
+            max_prob = -np.inf
+
+            # Evaluate 8 neighbors in the grid
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+
+                    nr, nc = current_r + dr, current_c + dc
+
+                    if 0 <= nr < height and 0 <= nc < width and not visited[nr, nc]:
+                        if probability_map[nr, nc] > max_prob:
+                            max_prob = probability_map[nr, nc]
+                            best_neighbor = (nr, nc)
+
+            if best_neighbor is not None:
+                current_positions[i] = best_neighbor
+                paths[i].append(best_neighbor)
+                visited[best_neighbor] = True
+
+    # --- Convert grid paths back to real-world coordinate paths ---
+    line_paths = []
+    for drone_path_indices in paths:
+        if len(drone_path_indices) > 1:
+            # For each (row, col) in the path, look up the corresponding (x, y) coordinate
+            world_coords = [(x_map[c], y_map[r]) for r, c in drone_path_indices]
+            line_paths.append(LineString(world_coords))
+        else:
+            line_paths.append(LineString())
+
+    return line_paths

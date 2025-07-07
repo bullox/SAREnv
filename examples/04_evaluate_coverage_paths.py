@@ -57,6 +57,7 @@ def run_evaluation():
         max_radius_m = item.radius_km * 1000
 
         path_generators = {
+            "Greedy": lambda: paths.generate_greedy_path(center_x, center_y, item.heatmap, item.bounds),
             "Spiral": lambda: paths.generate_spiral_path(center_x, center_y, max_radius_m, FOV_DEGREES, ALTITUDE_METERS, OVERLAP_RATIO, NUM_DRONES, PATH_POINT_SPACING_M),
             "Concentric": lambda: paths.generate_concentric_circles_path(center_x, center_y, max_radius_m, FOV_DEGREES, ALTITUDE_METERS, OVERLAP_RATIO, NUM_DRONES, PATH_POINT_SPACING_M, TRANSITION_DISTANCE_M),
             "Pizza": lambda: paths.generate_pizza_zigzag_path(center_x, center_y, max_radius_m, NUM_DRONES, FOV_DEGREES, ALTITUDE_METERS, OVERLAP_RATIO, PATH_POINT_SPACING_M, PIZZA_BORDER_GAP_M)

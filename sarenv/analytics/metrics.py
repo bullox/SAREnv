@@ -29,7 +29,7 @@ class PathEvaluator:
         self.victims = victims
         self.detection_radius = altitude * np.tan(np.radians(fov_deg / 2))
         self.interpolation_resolution = int(np.ceil(meters_per_bin / 2))
-        
+
         minx, miny, maxx, maxy = self.extent
         y_range = np.linspace(miny, maxy, heatmap.shape[0])
         x_range = np.linspace(minx, maxx, heatmap.shape[1])
@@ -117,7 +117,7 @@ class PathEvaluator:
         """
         valid_paths = [p for p in paths if not p.is_empty and p.length > 0]
         if not valid_paths or self.victims.empty:
-            return {'percentage_found': 0, 'detection_timeliness': 0, 'found_victim_indices': []}
+            return {'percentage_found': 0, 'average_detection_distance': 0, 'found_victim_indices': []}
 
         # Use MultiLineString for potentially faster buffering and unioning
         path_collection = MultiLineString(valid_paths)
