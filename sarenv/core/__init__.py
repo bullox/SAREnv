@@ -10,7 +10,7 @@
 # )
 # # sarenv/io/__init__.py
 # from .loading import DatasetLoader, SARDatasetItem
-# from .survivor import SurvivorLocationGenerator
+# from .lost_person import lost_personLocationGenerator
 # from ..io.osm_query import export_as_geojson, query_features
 
 # __all__ = [
@@ -27,5 +27,5 @@
 #     "SARDatasetItem",
 #     "export_as_geojson",
 #     "query_features",
-#     "SurvivorLocationGenerator"
+#     "lost_personLocationGenerator"
 # ]

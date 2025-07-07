@@ -101,7 +101,7 @@ if __name__ == "__main__":
         dataset_directory=data_dir,
         evaluation_sizes=["large"], # Use a single size for a quick test
         num_drones=10,
-        num_missing_persons=100,
+        num_lost_persons=100,
     )
 
     # 2. Run the evaluations

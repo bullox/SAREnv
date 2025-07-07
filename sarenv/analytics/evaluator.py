@@ -26,7 +26,7 @@ class ComparativeEvaluator:
         dataset_directory="sarenv_dataset",
         evaluation_sizes=None,
         num_drones=3,
-        num_missing_persons=100,
+        num_lost_persons=100,
         custom_path_generators=None,  # SHOULD BE A DICT {name: function}
     ):
         """
@@ -49,7 +49,7 @@ class ComparativeEvaluator:
             "xlarge",
         ]
         self.num_drones = num_drones
-        self.num_victims = num_missing_persons
+        self.num_victims = num_lost_persons
         self.loader = sarenv.DatasetLoader(dataset_directory=self.dataset_directory)
         self.environments = {}
         self.results = None
@@ -246,7 +246,7 @@ if __name__ == "__main__":
         dataset_directory=data_dir,
         evaluation_sizes=["large"], # Use a single size for a quick test
         num_drones=10,
-        num_missing_persons=100,
+        num_lost_persons=100,
     )
 
     # 2. Run the evaluations

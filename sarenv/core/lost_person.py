@@ -1,6 +1,6 @@
-# sarenv/core/survivor.py
+# sarenv/core/lost_person.py
 """
-Generates plausible survivor locations based on geographic features.
+Generates plausible lost_person locations based on geographic features.
 """
 import random
 import geopandas as gpd
@@ -13,7 +13,7 @@ log = get_logger()
 
 class LostPersonLocationGenerator:
     """
-    Generates plausible survivor locations based on geographic features.
+    Generates plausible lost_person locations based on geographic features.
     """
     def __init__(self, dataset_item: SARDatasetItem):
         self.dataset_item = dataset_item
@@ -39,7 +39,7 @@ class LostPersonLocationGenerator:
 
     def generate_locations(self, n: int = 1) -> list[Point]:
         """
-        Generate multiple plausible survivor locations.
+        Generate multiple plausible lost_person locations.
 
         Args:
             n (int): Number of locations to generate.

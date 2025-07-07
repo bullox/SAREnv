@@ -11,16 +11,16 @@ from sarenv.utils.plot import DEFAULT_COLOR, FEATURE_COLOR_MAP
 
 log = get_logger()
 
-def run_survivor_generation_example(num_locations=1000, size_to_load="small"):
+def run_lost_person_generation_example(num_locations=1000, size_to_load="small"):
     """
-    An example demonstrating how to load a dataset, generate survivor
+    An example demonstrating how to load a dataset, generate lost_person
     locations, and visualize them.
 
     Args:
-        num_locations (int): The number of survivor locations to generate.
+        num_locations (int): The number of lost_person locations to generate.
         size_to_load (str): The dataset size to use for the environment.
     """
-    log.info("--- Starting Survivor Location Generation Example ---")
+    log.info("--- Starting lost_person Location Generation Example ---")
 
     dataset_dir = "sarenv_dataset"
 
@@ -34,16 +34,16 @@ def run_survivor_generation_example(num_locations=1000, size_to_load="small"):
             log.error(f"Could not load the dataset for size '{size_to_load}'.")
             return
 
-        # 2. Initialize the survivor location generator with the loaded data
-        log.info("Initializing the SurvivorLocationGenerator.")
-        survivor_generator = LostPersonLocationGenerator(dataset_item)
+        # 2. Initialize the lost_person location generator with the loaded data
+        log.info("Initializing the lost_personLocationGenerator.")
+        lost_person_generator = LostPersonLocationGenerator(dataset_item)
 
-        # 3. Generate survivor locations
-        log.info(f"Generating {num_locations} survivor locations...")
-        locations = survivor_generator.generate_locations(num_locations)
+        # 3. Generate lost_person locations
+        log.info(f"Generating {num_locations} lost_person locations...")
+        locations = lost_person_generator.generate_locations(num_locations)
 
         if not locations:
-            log.error("No survivor locations were generated. Cannot visualize.")
+            log.error("No lost_person locations were generated. Cannot visualize.")
             return
 
         # 4. Visualize the results
@@ -57,16 +57,16 @@ def run_survivor_generation_example(num_locations=1000, size_to_load="small"):
             data.plot(ax=ax, color=color, label=feature_type.capitalize(), alpha=0.6)
             legend_handles.append(Patch(color=color, label=feature_type.capitalize()))
 
-        # Plot the generated survivor locations
-        survivor_gdf = gpd.GeoDataFrame(geometry=locations, crs=dataset_item.features.crs)
-        survivor_gdf.plot(ax=ax, marker='*', color='red', markersize=250, zorder=10, label="Survivor")
-        legend_handles.append(plt.Line2D([0], [0], marker='*', color='w', markerfacecolor='red', markersize=15, label='Survivor'))
+        # Plot the generated lost_person locations
+        lost_person_gdf = gpd.GeoDataFrame(geometry=locations, crs=dataset_item.features.crs)
+        lost_person_gdf.plot(ax=ax, marker='*', color='red', markersize=250, zorder=10, label="Lost Person")
+        legend_handles.append(plt.Line2D([0], [0], marker='*', color='w', markerfacecolor='red', markersize=15, label='Lost Person'))
 
         # Add basemap for context
-        cx.add_basemap(ax, crs=survivor_gdf.crs.to_string(), source=cx.providers.OpenStreetMap.Mapnik)
+        cx.add_basemap(ax, crs=lost_person_gdf.crs.to_string(), source=cx.providers.OpenStreetMap.Mapnik)
 
         ax.legend(handles=legend_handles, title="Legend", loc="upper left")
-        ax.set_title(f"Generated Survivor Locations within '{size_to_load.capitalize()}' Area")
+        ax.set_title(f"Generated Lost Person Locations within '{size_to_load.capitalize()}' Area")
         ax.set_xlabel("Easting (meters)")
         ax.set_ylabel("Northing (meters)")
 
@@ -86,4 +86,4 @@ def run_survivor_generation_example(num_locations=1000, size_to_load="small"):
 
 if __name__ == "__main__":
     # Before running this, ensure you have run basic_usage_example.py to create the dataset
-    run_survivor_generation_example(num_locations=1000, size_to_load="xlarge")
+    run_lost_person_generation_example(num_locations=1000, size_to_load="xlarge")
