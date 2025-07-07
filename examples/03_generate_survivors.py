@@ -40,7 +40,7 @@ def run_lost_person_generation_example(num_locations=1000, size_to_load="small")
 
         # 3. Generate lost_person locations
         log.info(f"Generating {num_locations} lost_person locations...")
-        locations = lost_person_generator.generate_locations(num_locations)
+        locations = lost_person_generator.generate_locations(num_locations, 0) # 0% random samples
 
         if not locations:
             log.error("No lost_person locations were generated. Cannot visualize.")

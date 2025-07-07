@@ -45,7 +45,7 @@ def visualize_heatmap(item: SARDatasetItem, plot_basemap: bool = True):
     ax.set_xlabel("Easting (meters)")
     ax.set_ylabel("Northing (meters)")
     plt.tight_layout()
-    plt.savefig(f"heatmap_{item.size}.png")
+    plt.savefig(f"heatmap_{item.size}.pdf")
 
 
 def visualize_features(item: SARDatasetItem, plot_basemap: bool = True):
@@ -82,26 +82,30 @@ def visualize_features(item: SARDatasetItem, plot_basemap: bool = True):
         cx.add_basemap(ax, crs=item.features.crs.to_string(), source=cx.providers.OpenStreetMap.Mapnik)
 
     colors = ["blue", "orange", "red", "green"]
+    labels = ["25th", "50th", "75th", "95th"]
     for idx, r in enumerate(radii):
         circle = center_point_proj.buffer(r * 1000).iloc[0]
         color = colors[idx % len(colors)]
         gpd.GeoSeries([circle], crs=data_crs).boundary.plot(
             ax=ax, edgecolor=color, linestyle="--", linewidth=2, alpha=1)
-        label = f"Radius: {item.size} ({item.radius_km} km)"
+        label = f"Radius: {labels[idx]} ({r} km)"
         legend_handles.append(
             Line2D([0], [0], color=color, lw=2.5, linestyle="--", label=label)
         )
 
     ax.legend(handles=legend_handles, title="Legend", loc="upper left")
-    # Updated title to use 'size'
-    # ax.set_title(f"Nested Dataset Visualization (Base: {item.size})")
-    ax.set_xlabel("Easting (meters)")
-    ax.set_ylabel("Northing (meters)")
+
+    # Set axis labels and ticks in kilometers
+    x_ticks = ax.get_xticks()
+    y_ticks = ax.get_yticks()
+    ax.set_xticklabels([f"{x/1000:.1f}" for x in x_ticks])
+    ax.set_yticklabels([f"{y/1000:.1f}" for y in y_ticks])
+    ax.set_xlabel("Easting (km)")
+    ax.set_ylabel("Northing (km)")
 
     plt.tight_layout()
-    plt.savefig(f"features_{item.size}.png")
+    plt.savefig(f"features_{item.size}.pdf")
     plt.plot()
-
 
 def run_loading_example():
     """
@@ -123,7 +127,7 @@ def run_loading_example():
             # Call the new all-in-one visualization function
             visualize_features(item, False)
             visualize_heatmap(item, False)
-            plt.show()
+            # plt.show()
         else:
             log.error(f"Could not load the specified size: '{size_to_load}'")
 

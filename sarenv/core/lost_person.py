@@ -37,7 +37,7 @@ class LostPersonLocationGenerator:
             if poly.contains(random_point):
                 return random_point
 
-    def generate_locations(self, n: int = 1) -> list[Point]:
+    def generate_locations(self, n: int = 1, percent_random_samples=0) -> list[Point]:
         """
         Generate multiple plausible lost_person locations.
 
@@ -52,8 +52,6 @@ class LostPersonLocationGenerator:
             return []
 
         locations = []
-        attempts = 0
-        max_attempts = n * 10  # Prevent infinite loops
 
         center_proj = gpd.GeoDataFrame(
             geometry=[Point(self.dataset_item.center_point)],
@@ -61,32 +59,27 @@ class LostPersonLocationGenerator:
         ).to_crs(self.features.crs).geometry.iloc[0]
         main_search_circle = center_proj.buffer(self.dataset_item.radius_km * 1000)
 
-        while len(locations) < n and attempts < max_attempts:
+        while len(locations) < n:
             # Randomly choose a feature type based on the probabilities
-            chosen_type = random.choices(
-                list(self.type_probabilities.keys()),
-                weights=list(self.type_probabilities.values()),
-                k=1
-            )[0]
-            type_gdf = self.features[self.features['feature_type'] == chosen_type]
+            if random.random() < percent_random_samples:  # 10% chance to choose a random type
+                chosen_feature = self.features.sample(n=1).iloc[0]
+                feature_buffer = chosen_feature.geometry.buffer(15)
+                final_search_area = feature_buffer.intersection(main_search_circle)
+            else:
+                chosen_type = random.choices(
+                    list(self.type_probabilities.keys()),
+                    weights=list(self.type_probabilities.values()),
+                    k=1
+                )[0]
+                type_gdf = self.features[self.features['feature_type'] == chosen_type]
+                chosen_feature = type_gdf.sample(n=1, weights='area_probability').iloc[0]
+                feature_buffer = chosen_feature.geometry.buffer(15)
+                final_search_area = feature_buffer.intersection(main_search_circle)
 
-            if type_gdf.empty or type_gdf['area_probability'].sum() == 0:
-                attempts += 1
-                continue
-
-            chosen_feature = type_gdf.sample(n=1, weights='area_probability').iloc[0]
-            feature_buffer = chosen_feature.geometry.buffer(15)
-            final_search_area = feature_buffer.intersection(main_search_circle)
-
-            if final_search_area.is_empty:
-                attempts += 1
-                continue
 
             point = self._generate_random_point_in_polygon(final_search_area)
             if point:
                 locations.append(point)
-            attempts += 1
-
         if len(locations) < n:
             log.warning(f"Only generated {len(locations)} out of {n} requested locations.")
 
