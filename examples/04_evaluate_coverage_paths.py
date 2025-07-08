@@ -95,13 +95,22 @@ if __name__ == "__main__":
     # run_evaluation()
 
     log.info("--- Initializing the Search and Rescue Toolkit ---")
-    data_dir = "sarenv_dataset"  # Path to the dataset directory
+    data_dir = "sarenv_dataset/1"  # Path to the dataset directory
+
+    # first figure: metrics evaluations
+    # For all dataset
+    # Each graph should have each of the metrics as a separate line
+    # Large datasets
+    # time / distance on the x-axis
+    # metrics on the y-axis (two axis, one for likelihood, one for victims found)
+
+    # Also save the results as a csv file: dataset #, environment_type, climate_type, size, algorithm, likelihood score, time-discounted score, victims found (%)
 
     # 1. Initialize the evaluator
     evaluator = ComparativeEvaluator(
         dataset_directory=data_dir,
         evaluation_sizes=["large"], # Use a single size for a quick test
-        num_drones=10,
+        num_drones=5,
         num_lost_persons=100,
     )
 
