@@ -206,10 +206,7 @@ def generate_all():
 
     size_to_load = "xlarge"
     for id, lon, lat, climate, env_type in points:
-        if env_type == ENVIRONMENT_TYPE_FLAT:
-            out_dir = os.path.join(base_output_dir, "temperate", "flat", str(id))
-        else:
-            out_dir = os.path.join(base_output_dir, "temperate", "mountainous", str(id))
+        out_dir = os.path.join(base_output_dir, str(id))
 
         os.makedirs(out_dir, exist_ok=True)
         log.info(f"Generating dataset for point ({lat}, {lon}) at {out_dir}")
@@ -223,10 +220,7 @@ def generate_all():
         )
 
     for id, lon, lat, climate, env_type in points:
-        if env_type == ENVIRONMENT_TYPE_FLAT:
-            out_dir = os.path.join(base_output_dir, "temperate", "flat", str(id))
-        else:
-            out_dir = os.path.join(base_output_dir, "temperate", "mountainous", str(id))
+        out_dir = os.path.join(base_output_dir, str(id))
 
         os.makedirs(out_dir, exist_ok=True)
         log.info(f"Generating dataset for point ({lat}, {lon}) at {out_dir}")
