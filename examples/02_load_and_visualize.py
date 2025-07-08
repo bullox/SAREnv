@@ -33,12 +33,32 @@ def visualize_heatmap(item: SARDatasetItem, plot_basemap: bool = True):
     minx, miny, maxx, maxy = item.bounds
     # Plot the heatmap with the calculated extent
     im = ax.imshow(
-        item.heatmap, extent=(minx, maxx, miny, maxy), origin="lower", cmap="inferno"
+        item.heatmap, extent=(minx, maxx, miny, maxy), origin="lower", cmap="YlOrRd"
     )
     # Add a colorbar to show the probability scale
     fig.colorbar(im, ax=ax, shrink=0.8, label="Probability Density")
     if plot_basemap:
         cx.add_basemap(ax, crs=data_crs, source=cx.providers.OpenStreetMap.Mapnik, alpha=0.7)
+
+    radii = get_environment_radius(item.environment_type, item.environment_climate)
+    center_point_gdf = gpd.GeoDataFrame(
+        geometry=[Point(item.center_point)], crs="EPSG:4326"
+    )
+    center_point_proj = center_point_gdf.to_crs(crs=data_crs)
+    legend_handles = []
+    colors = ["blue", "orange", "red", "green"]
+    labels = ["25th", "50th", "75th", "95th"]
+    for idx, r in enumerate(radii):
+        circle = center_point_proj.buffer(r * 1000).iloc[0]
+        color = colors[idx % len(colors)]
+        gpd.GeoSeries([circle], crs=data_crs).boundary.plot(
+            ax=ax, edgecolor=color, linestyle="--", linewidth=2, alpha=1)
+        label = f"Radius: {labels[idx]} ({r} km)"
+        legend_handles.append(
+            Line2D([0], [0], color=color, lw=2.5, linestyle="--", label=label)
+        )
+    ax.legend(handles=legend_handles, title="Legend", loc="upper left")
+
 
     # Updated title to use 'size'
     # ax.set_title(f"Heatmap Visualization: Size '{item.size}'")
@@ -127,7 +147,7 @@ def run_loading_example():
             # Call the new all-in-one visualization function
             visualize_features(item, False)
             visualize_heatmap(item, False)
-            # plt.show()
+            plt.show()
         else:
             log.error(f"Could not load the specified size: '{size_to_load}'")
 

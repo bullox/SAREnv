@@ -71,7 +71,7 @@ def run_lost_person_generation_example(num_locations=1000, size_to_load="small")
         ax.set_ylabel("Northing (meters)")
 
         plt.tight_layout()
-        plt.show()
+        plt.savefig(f"lost_person_locations_{size_to_load}.pdf")
 
     except FileNotFoundError:
         log.error(
