@@ -67,6 +67,7 @@ class ComparativeEvaluator:
 
         # Register baseline algorithms
         self.baseline_generators = {
+            "Random": lambda args: paths.generate_random_walk_path(**args),
             "Greedy": lambda args: paths.generate_greedy_path(**args),
             "Spiral": lambda args: paths.generate_spiral_path(**args),
             "Concentric": lambda args: paths.generate_concentric_circles_path(**args),
