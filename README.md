@@ -63,9 +63,34 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+### Download Pre-generated Dataset
+
+The repository includes pre-generated datasets stored using Git LFS (Large File Storage). To download the data files needed to run the examples:
+
+```bash
+# Install Git LFS if not already installed
+# On Ubuntu/Debian:
+sudo apt-get install git-lfs
+
+# On macOS with Homebrew:
+brew install git-lfs
+
+# On Windows, download from: https://git-lfs.github.io/
+
+# Initialize Git LFS in the repository
+git lfs install
+
+# Download the dataset files
+git lfs pull
+```
+
+**Note**: The dataset files are stored in the `sarenv_dataset/` directory and are required to run the examples. If you prefer to generate your own dataset, you can skip this step and use the dataset generation functionality described below.
+
 ### Basic Usage
 
-#### 1. Generate Dataset
+#### 1. Generate Dataset (Optional)
+
+If you prefer to generate your own dataset instead of using the pre-generated data:
 
 ```python
 import sarenv
@@ -76,6 +101,8 @@ generator = sarenv.DataGenerator()
 # Generate dataset for different locations and sizes
 generator.export_dataset()
 ```
+
+**Note**: This step is optional if you've already downloaded the pre-generated dataset using Git LFS as described above.
 
 #### 2. Load and Visualize Data
 
