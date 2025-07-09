@@ -22,98 +22,7 @@ from sarenv.utils.geo import get_utm_epsg
 from sarenv.utils.plot import DEFAULT_COLOR, FEATURE_COLOR_MAP
 from shapely.geometry import Point
 from sarenv.utils.lost_person_behavior import get_environment_radius
-
-log = get_logger()
-
-
-def visualize_heatmap(item: SARDatasetItem, plot_basemap: bool = True):
-    """
-    Creates a plot to visualize the heatmap of a single SARDatasetItem.
-
-    Args:
-        item (SARDatasetItem): The loaded dataset item to visualize.
-    """
-    # Updated to use 'size' instead of 'quantile'
-    log.info(f"Generating heatmap visualization for size: {item.size}...")
-
-    fig, ax = plt.subplots(figsize=(12, 10))
-
-    # Determine the correct projected CRS for the item's location
-    data_crs = get_utm_epsg(item.center_point[0], item.center_point[1])
-    minx, miny, maxx, maxy = item.bounds
-    # Plot the heatmap with the calculated extent
-    im = ax.imshow(
-        item.heatmap, extent=(minx, maxx, miny, maxy), origin="lower", cmap="inferno"
-    )
-    # Add a colorbar to show the probability scale
-    fig.colorbar(im, ax=ax, shrink=0.8, label="Probability Density")
-    if plot_basemap:
-        cx.add_basemap(ax, crs=data_crs, source=cx.providers.OpenStreetMap.Mapnik, alpha=0.7)
-
-    # Updated title to use 'size'
-    # ax.set_title(f"Heatmap Visualization: Size '{item.size}'")
-    ax.set_xlabel("Easting (meters)")
-    ax.set_ylabel("Northing (meters)")
-    plt.tight_layout()
-
-
-def visualize_features(item: SARDatasetItem, plot_basemap: bool = True):
-    """
-    Creates a single plot showing the largest dataset in full, with the radii
-    of the smaller datasets overlaid as circular borders.
-
-    Args:
-        items (List[SARDatasetItem]): A list of loaded dataset items. The function
-                                     will use the one with the largest radius as the base.
-    """
-    if not item:
-        log.warning("No dataset items provided to visualize.")
-        return
-
-    # Sort items by radius to easily find the largest one
-    radii = get_environment_radius(item.environment_type, item.environment_climate)
-
-    log.info(f"Generating nested visualization using '{item.size}' as the base...")
-    center_point_gdf = gpd.GeoDataFrame(
-        geometry=[Point(item.center_point)], crs="EPSG:4326"
-    )
-    data_crs = get_utm_epsg(item.center_point[0], item.center_point[1])
-    center_point_proj = center_point_gdf.to_crs(crs=data_crs)
-    fig, ax = plt.subplots(figsize=(13, 13))
-
-    legend_handles = []
-    for feature_type, data in item.features.groupby("feature_type"):
-        color = FEATURE_COLOR_MAP.get(feature_type, DEFAULT_COLOR)
-        data.plot(ax=ax, color=color, label=feature_type.capitalize(), alpha=0.7)
-        legend_handles.append(Patch(color=color, label=feature_type.capitalize()))
-
-    radius_circle = center_point_proj.buffer(item.radius_km * 1000).iloc[0]
-    colors = ["blue", "green", "red", "purple", "orange", "cyan", "magenta"]
-    for idx, r in enumerate(radii):
-        circle = center_point_proj.buffer(r * 1000).iloc[0]
-        color = colors[idx % len(colors)]
-        gpd.GeoSeries([circle], crs=data_crs).boundary.plot(
-            ax=ax, edgecolor=color, linestyle="--", linewidth=1.5, alpha=0.5
-        )
-
-    # Create a legend handle for the radius (updated to use 'size')
-    label = f"Radius: {item.size} ({item.radius_km} km)"
-    legend_handles.append(
-        Line2D([0], [0], color=color, lw=2.5, linestyle="--", label=label)
-    )
-    if plot_basemap:
-        cx.add_basemap(ax, crs=item.features.crs.to_string(), source=cx.providers.OpenStreetMap.Mapnik)
-
-    ax.legend(handles=legend_handles, title="Legend", loc="upper left")
-    # Updated title to use 'size'
-    # ax.set_title(f"Nested Dataset Visualization (Base: {item.size})")
-    ax.set_xlabel("Easting (meters)")
-    ax.set_ylabel("Northing (meters)")
-
-    plt.tight_layout()
-    plt.savefig(f"features_{item.size}.png")
-    plt.plot()
-
+from sarenv import visualize_features, visualize_heatmap
 
 log = get_logger()
 
@@ -205,19 +114,19 @@ def generate_all():
     base_output_dir = "sarenv_dataset"
 
     size_to_load = "xlarge"
-    for id, lon, lat, climate, env_type in points:
-        out_dir = os.path.join(base_output_dir, str(id))
+    # for id, lon, lat, climate, env_type in points:
+    #     out_dir = os.path.join(base_output_dir, str(id))
 
-        os.makedirs(out_dir, exist_ok=True)
-        log.info(f"Generating dataset for point ({lat}, {lon}) at {out_dir}")
+    #     os.makedirs(out_dir, exist_ok=True)
+    #     log.info(f"Generating dataset for point ({lat}, {lon}) at {out_dir}")
 
-        data_gen.export_dataset(
-            center_point=(lon, lat),
-            output_directory=out_dir,
-            environment_climate=climate,
-            environment_type=env_type,
-            meter_per_bin=30,
-        )
+    #     data_gen.export_dataset(
+    #         center_point=(lon, lat),
+    #         output_directory=out_dir,
+    #         environment_climate=climate,
+    #         environment_type=env_type,
+    #         meter_per_bin=30,
+    #     )
 
     for id, lon, lat, climate, env_type in points:
         out_dir = os.path.join(base_output_dir, str(id))
@@ -234,9 +143,10 @@ def generate_all():
 
             if item:
                 # Call the new all-in-one visualization function
-                visualize_features(item, False)
+                visualize_features(item,False, False, 0, False)
                 plt.savefig(os.path.join(out_dir, f"features_{item.size}.png"))
-                visualize_heatmap(item, False)
+
+                visualize_heatmap(item, False, False,False)
                 plt.savefig(os.path.join(out_dir, f"heatmap_{item.size}.png"))
             else:
                 log.error(f"Could not load the specified size: '{size_to_load}'")

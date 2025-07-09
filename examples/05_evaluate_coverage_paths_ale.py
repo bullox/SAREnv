@@ -274,7 +274,7 @@ def run_evaluation():
         # 4. Evaluate and Visualize Each Path
         for name, generator in path_generators.items():
             log.info(f"--- Evaluating '{name}' Path ---")
-            generated_paths = generator()
+            generated_paths = generator(center_x, center_y, max_radius_m, item)
             
             all_metrics = evaluator.calculate_all_metrics(generated_paths, discount_factor=0.999)
             likelihood = all_metrics['total_likelihood_score']

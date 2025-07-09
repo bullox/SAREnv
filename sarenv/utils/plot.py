@@ -104,7 +104,7 @@ def visualize_path_plotly(item: SARDatasetItem, path_name: str, paths: list, col
     fig.write_html(output_path, include_plotlyjs="cdn")
 
 
-def visualize_heatmap(item: SARDatasetItem, plot_basemap: bool = True, plot_inset: bool = True):
+def visualize_heatmap(item: SARDatasetItem, plot_basemap: bool = True, plot_inset: bool = True, plot_show = True):
     """
     Creates a plot to visualize the heatmap with a circular, magnified inset.
     The colorbar is positioned to the right of the inset.
@@ -206,10 +206,11 @@ def visualize_heatmap(item: SARDatasetItem, plot_basemap: bool = True, plot_inse
     ax.set_ylabel("Northing (km)")
     plt.tight_layout(rect=[0, 0, 0.85, 1])
     plt.savefig(f"heatmap_{item.size}_magnified.pdf", bbox_inches='tight')
-    plt.show()
+    if plot_show:
+        plt.show()
 
 
-def visualize_features(item: SARDatasetItem, plot_basemap: bool = False, plot_inset: bool = False, num_lost_persons: int = 0):
+def visualize_features(item: SARDatasetItem, plot_basemap: bool = False, plot_inset: bool = False, num_lost_persons: int = 0, plot_show=True):
     """
     Creates a plot with a circular, magnified callout of the "medium" radius.
 
@@ -345,4 +346,5 @@ def visualize_features(item: SARDatasetItem, plot_basemap: bool = False, plot_in
 
     plt.tight_layout(rect=[0, 0, 0.85, 1])
     plt.savefig(f"features_{item.size}_circular_magnified_final.pdf", bbox_inches='tight')
-    plt.show()
+    if plot_show:
+        plt.show()
