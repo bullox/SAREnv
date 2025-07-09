@@ -2,7 +2,6 @@
 """
 Collection of coverage path generation algorithms for drones.
 """
-import random
 import numpy as np
 from shapely.geometry import LineString, Point
 from shapely.ops import substring
@@ -18,6 +17,7 @@ def split_path_for_drones(path: LineString, num_drones: int) -> list[LineString]
 
 # Add **kwargs to accept and ignore unused arguments
 def generate_spiral_path(center_x: float, center_y: float, max_radius: float, fov_deg: float, altitude: float, overlap: float, num_drones: int, path_point_spacing_m: float, **kwargs) -> list[LineString]:
+    budget = kwargs.get('budget')
     loop_spacing = (2 * altitude * np.tan(np.radians(fov_deg / 2))) * (1 - overlap)
     a = loop_spacing / (2 * np.pi)
     num_rotations = max_radius / loop_spacing
@@ -26,11 +26,18 @@ def generate_spiral_path(center_x: float, center_y: float, max_radius: float, fo
     num_points = int(approx_path_length / path_point_spacing_m) if path_point_spacing_m > 0 else 2000
     theta = np.linspace(0, theta_max, max(2, num_points))
     radius = np.clip(a * theta, 0, max_radius)
-    full_path = LineString(zip(center_x + radius * np.cos(theta), center_y + radius * np.sin(theta)))
-    return split_path_for_drones(full_path, num_drones)
+    full_path = LineString(zip(center_x + radius * np.cos(theta), center_y + radius * np.sin(theta), strict=True))
+    paths = split_path_for_drones(full_path, num_drones)
+    
+    # Apply budget constraint if specified - trim excess points
+    if budget is not None and budget > 0:
+        paths = apply_max_length_to_paths(paths, budget / num_drones)
+    
+    return paths
 
 # Add **kwargs here as well for consistency
 def generate_concentric_circles_path(center_x: float, center_y: float, max_radius: float, fov_deg: float, altitude: float, overlap: float, num_drones: int, path_point_spacing_m: float, transition_distance_m: float, **kwargs) -> list[LineString]:
+    budget = kwargs.get('budget')
     radius_increment = (2 * altitude * np.tan(np.radians(fov_deg / 2))) * (1 - overlap)
     path_points, current_radius = [], radius_increment
     while current_radius <= max_radius:
@@ -38,19 +45,27 @@ def generate_concentric_circles_path(center_x: float, center_y: float, max_radiu
         arc_length = current_radius * (2 * np.pi - transition_angle_rad)
         num_points_circle = max(2, int(arc_length / path_point_spacing_m))
         theta = np.linspace(0, 2 * np.pi - transition_angle_rad, num_points_circle)
-        path_points.extend(zip(center_x + current_radius * np.cos(theta), center_y + current_radius * np.sin(theta)))
+        path_points.extend(zip(center_x + current_radius * np.cos(theta), center_y + current_radius * np.sin(theta), strict=True))
         next_radius = current_radius + radius_increment
-        if next_radius <= max_radius: path_points.append((center_x + next_radius, center_y))
+        if next_radius <= max_radius:
+            path_points.append((center_x + next_radius, center_y))
         else:
             final_theta_points = max(2, int((current_radius * transition_angle_rad) / path_point_spacing_m))
             final_theta = np.linspace(2 * np.pi - transition_angle_rad, 2 * np.pi, final_theta_points)
-            path_points.extend(zip(center_x + current_radius * np.cos(final_theta), center_y + current_radius * np.sin(final_theta)))
+            path_points.extend(zip(center_x + current_radius * np.cos(final_theta), center_y + current_radius * np.sin(final_theta), strict=True))
         current_radius = next_radius
     full_path = LineString(path_points) if path_points else LineString()
-    return split_path_for_drones(full_path, num_drones)
+    paths = split_path_for_drones(full_path, num_drones)
+    
+    # Apply budget constraint if specified - trim excess points
+    if budget is not None and budget > 0:
+        paths = apply_max_length_to_paths(paths, budget / num_drones)
+    
+    return paths
 
 # Add **kwargs here too to handle arguments like 'transition_distance_m'
 def generate_pizza_zigzag_path(center_x: float, center_y: float, max_radius: float, num_drones: int, fov_deg: float, altitude: float, overlap: float, path_point_spacing_m: float, border_gap_m: float, **kwargs) -> list[LineString]:
+    budget = kwargs.get('budget')
     paths, section_angle_rad = [], 2 * np.pi / num_drones
     pass_width = (2 * altitude * np.tan(np.radians(fov_deg / 2))) * (1 - overlap)
     for i in range(num_drones):
@@ -60,13 +75,21 @@ def generate_pizza_zigzag_path(center_x: float, center_y: float, max_radius: flo
             angular_offset_rad = border_gap_m / radius if radius > 0 else 0
             start_angle, end_angle = base_start_angle + angular_offset_rad, base_end_angle - angular_offset_rad
             if start_angle >= end_angle:
-                radius += pass_width; continue
+                radius += pass_width
+                continue
             arc_length = radius * (end_angle - start_angle)
             num_arc_points = max(2, int(arc_length / path_point_spacing_m))
             current_arc_angles = np.linspace(start_angle, end_angle, num_arc_points) if direction == 1 else np.linspace(end_angle, start_angle, num_arc_points)
-            points.extend(zip(center_x + radius * np.cos(current_arc_angles), center_y + radius * np.sin(current_arc_angles)))
-            radius += pass_width; direction *= -1
-        if len(points) > 1: paths.append(LineString(points))
+            points.extend(zip(center_x + radius * np.cos(current_arc_angles), center_y + radius * np.sin(current_arc_angles), strict=True))
+            radius += pass_width
+            direction *= -1
+        if len(points) > 1:
+            paths.append(LineString(points))
+    
+    # Apply budget constraint if specified - trim excess points
+    if budget is not None and budget > 0:
+        paths = apply_max_length_to_paths(paths, budget / num_drones)
+    
     return paths
 
 def generate_greedy_path(center_x: float, center_y: float, num_drones: int, probability_map: np.ndarray, bounds: tuple, max_radius: float, **kwargs) -> list[LineString]:
@@ -75,8 +98,9 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
 
     Each drone starts at a specified center coordinate and iteratively moves to the adjacent
     (including diagonal) grid cell with the highest probability value that has not been
-    visited by any drone. The simulation runs until no more moves are possible.
+    visited by any drone. The simulation runs until no more moves are possible or budget is exhausted.
     """
+    budget = kwargs.get('budget')
     height, width = probability_map.shape
     minx, miny, maxx, maxy = bounds
 
@@ -120,18 +144,27 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
 
     # Pre-define neighbor offsets to avoid array creation in loop
     neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
-    max_iterations = height * width // num_drones 
-    # Main simulation loop - optimized for speed
+    max_iterations = height * width * 10  # Increase max iterations to allow full budget usage
+    
+    # Budget tracking: track cumulative distance for each drone
+    budget_per_drone = budget / num_drones if budget is not None else None
+    drone_distances = [0.0] * num_drones  # Track cumulative distance for each drone
+    drone_active = [True] * num_drones  # Track which drones still have budget
 
     iteration = 0
-    while  iteration < max_iterations:
-
+    while iteration < max_iterations:
         iteration += 1
-
+        any_drone_moved = False
+        
         for i in range(num_drones):
+            # Skip drone if it has exhausted its budget
+            if not drone_active[i]:
+                continue
+                
             current_r, current_c = current_positions[i]
             best_neighbor = None
             best_prob = -1
+            fallback_neighbor = None  # For when no unvisited cells remain
 
             # Check all 8 neighbors directly
             for dr, dc in neighbor_offsets:
@@ -148,21 +181,52 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
                 if dist_sq > max_radius_sq:
                     continue
 
-                # Skip if already visited
-                if visited[nr, nc]:
-                    continue
-
-                # Check probability
+                # Get probability for this cell
                 prob = probability_map[nr, nc]
-                if prob > best_prob:
-                    best_prob = prob
-                    best_neighbor = (nr, nc)
+                
+                # Prefer unvisited cells with high probability
+                if not visited[nr, nc]:
+                    if prob > best_prob:
+                        best_prob = prob
+                        best_neighbor = (nr, nc)
+                else:
+                    # Keep track of best visited cell as fallback
+                    if fallback_neighbor is None or prob > probability_map[fallback_neighbor[0], fallback_neighbor[1]]:
+                        fallback_neighbor = (nr, nc)
 
-            # Move drone if valid neighbor found
+            # If no unvisited neighbors, use the best visited neighbor to continue moving
+            if best_neighbor is None and fallback_neighbor is not None:
+                best_neighbor = fallback_neighbor
+                best_prob = probability_map[fallback_neighbor[0], fallback_neighbor[1]]
+
+            # Move drone if any neighbor found
             if best_neighbor is not None:
+                # Calculate distance from current position to best neighbor
+                curr_world_x = x_offset + current_c * dx
+                curr_world_y = y_offset + current_r * dy
+                new_world_x = x_offset + best_neighbor[1] * dx
+                new_world_y = y_offset + best_neighbor[0] * dy
+                
+                move_distance = np.sqrt((new_world_x - curr_world_x)**2 + (new_world_y - curr_world_y)**2)
+                
+                # Check if this move would exceed budget
+                if budget_per_drone is not None and drone_distances[i] + move_distance > budget_per_drone:
+                    drone_active[i] = False  # Mark this drone as out of budget
+                    continue
+                
+                # Make the move
                 current_positions[i] = best_neighbor
                 paths[i].append(best_neighbor)
-                visited[best_neighbor] = True
+                visited[best_neighbor] = True  # Mark as visited for other drones
+                any_drone_moved = True
+                
+                # Update cumulative distance
+                if budget_per_drone is not None:
+                    drone_distances[i] += move_distance
+        
+        # Early termination only if no drones can move (all out of budget or no valid moves)
+        if not any_drone_moved:
+            break
 
     # --- Convert grid paths back to real-world coordinate paths ---
     line_paths = []
@@ -176,98 +240,12 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
 
     return line_paths
 
-def generate_random_noncolliding_paths(center_x: float, center_y: float, max_radius: float, num_drones: int, path_point_spacing_m: float, max_points: int = 500, max_attempts: int = 1000, **kwargs) -> list[LineString]:
-    # Constants inside the function
-    SAFETY_DISTANCE = 5.0 # Minimum distance between paths
-    MAX_TURN_ANGLE_DEG = 45.0
-    MIN_RADIUS = 1.0
-    SAFETY_DISTANCE_DISABLE_STEPS = 10  # Number of initial steps to disable safety distance
-
-    sector_angle = 2 * np.pi / num_drones
-    safety_distance = SAFETY_DISTANCE
-
-    paths = []
-    attempts = 0
-
-    while len(paths) < num_drones and attempts < max_attempts:
-        drone_idx = len(paths)
-        base_angle = drone_idx * sector_angle
-        points = [(center_x, center_y)]
-        current_point = Point(center_x, center_y)
-        prev_angle = base_angle
-
-        for step in range(max_points):
-            current_radius = current_point.distance(Point(center_x, center_y))
-            min_next_radius = max(current_radius + 0.5 * path_point_spacing_m, MIN_RADIUS) if step > 0 else 0
-
-            found_valid = False
-            for _ in range(20):
-                # Restrict angle for initial steps to stay in sector
-                if step < SAFETY_DISTANCE_DISABLE_STEPS:
-                    angle_offset = np.radians(np.random.uniform(-sector_angle/4, sector_angle/4))
-                    new_angle = base_angle + angle_offset
-                else:
-                    angle_offset = np.radians(np.random.uniform(-MAX_TURN_ANGLE_DEG, MAX_TURN_ANGLE_DEG))
-                    new_angle = prev_angle + angle_offset
-
-                next_x = current_point.x + path_point_spacing_m * np.cos(new_angle)
-                next_y = current_point.y + path_point_spacing_m * np.sin(new_angle)
-                next_point = Point(next_x, next_y)
-                next_radius = next_point.distance(Point(center_x, center_y))
-                if next_radius < min_next_radius or next_radius > max_radius:
-                    continue
-
-                # Safety distance checks after initial steps
-                if step >= SAFETY_DISTANCE_DISABLE_STEPS:
-                    too_close = False
-                    for path in paths:
-                        if next_point.distance(path) < safety_distance:
-                            too_close = True
-                            break
-                    if too_close:
-                        continue
-
-                temp_points = points + [(next_x, next_y)]
-                candidate_line = LineString(temp_points)
-                crosses_existing = False
-                for existing_path in paths:
-                    if candidate_line.crosses(existing_path):
-                        crosses_existing = True
-                        break
-                if crosses_existing:
-                    continue
-
-                points.append((next_x, next_y))
-                current_point = next_point
-                prev_angle = new_angle
-                found_valid = True
-                break
-
-            if not found_valid:
-                direction = np.arctan2(current_point.y - center_y, current_point.x - center_x)
-                border_x = center_x + max_radius * np.cos(direction)
-                border_y = center_y + max_radius * np.sin(direction)
-                border_point = Point(border_x, border_y)
-                if border_point.distance(current_point) > 1e-3:
-                    points.append((border_x, border_y))
-                break
-
-        if len(points) > 1 and Point(points[-1]).distance(Point(center_x, center_y)) >= max_radius - 1e-6:
-            candidate = LineString(points)
-            paths.append(candidate)
-
-        attempts += 1
-
-    return paths
 
 def generate_random_walk_path(
     center_x: float,
     center_y: float,
     num_drones: int,
-    probability_map: np.ndarray,
-    bounds: tuple,
     num_jumps: int = 20,
-    exploration_strength: float = 0.75,
     randomness: float = 2.0,
     memory_size: int = 10,
     **kwargs
@@ -276,7 +254,8 @@ def generate_random_walk_path(
     Generates random walk paths for multiple drones.
 
     Each drone performs a random walk where it moves in a direction for 10 steps,
-    then changes direction. The walk continues until a specific distance is reached.
+    then changes direction. The walk continues until a specific distance is reached
+    or the budget is exhausted.
 
     Args:
         center_x, center_y: Starting coordinates for all drones
@@ -287,7 +266,7 @@ def generate_random_walk_path(
         exploration_strength: Controls how much drones prefer unexplored areas (0-1)
         randomness: Controls randomness of direction changes
         memory_size: Number of recent positions to remember for avoiding revisits
-        **kwargs: Additional parameters (may include max_radius, path_point_spacing_m)
+        **kwargs: Additional parameters (may include max_radius, path_point_spacing_m, budget)
 
     Returns:
         List of LineString objects representing the path for each drone
@@ -295,6 +274,8 @@ def generate_random_walk_path(
     # Extract additional parameters from kwargs
     max_radius = kwargs.get('max_radius', 100.0)  # Default radius if not provided
     path_point_spacing_m = kwargs.get('path_point_spacing_m', 5.0)  # Default step size
+    budget = kwargs.get('budget')
+    budget_per_drone = budget / num_drones if budget is not None else None
 
     # Constants
     STEPS_PER_DIRECTION = 10  # Number of steps before changing direction
@@ -321,6 +302,9 @@ def generate_random_walk_path(
 
         # Memory of recent positions to avoid immediate revisits
         recent_positions = [(current_x, current_y)]
+        
+        # Track distance for budget constraint
+        current_distance = 0.0
 
         # Perform random walk with direction changes
         for jump in range(num_jumps):
@@ -337,6 +321,10 @@ def generate_random_walk_path(
                 step_size = rng.uniform(MIN_STEP_SIZE, MAX_STEP_SIZE)
                 direction_noise = rng.normal(0, np.pi / (randomness * 4))
                 actual_direction = current_direction + direction_noise
+
+                # Check budget constraint first
+                if budget_per_drone is not None and current_distance + step_size > budget_per_drone:
+                    break  # Stop if adding this step would exceed budget
 
                 # Calculate next position
                 next_x = current_x + step_size * np.cos(actual_direction)
@@ -375,9 +363,17 @@ def generate_random_walk_path(
                         next_x += path_point_spacing_m * 0.3 * np.cos(avoidance_angle)
                         next_y += path_point_spacing_m * 0.3 * np.sin(avoidance_angle)
 
+                # Calculate actual step distance
+                actual_step_distance = np.sqrt((next_x - current_x)**2 + (next_y - current_y)**2)
+                
+                # Final budget check with actual distance
+                if budget_per_drone is not None and current_distance + actual_step_distance > budget_per_drone:
+                    break  # Stop if adding this step would exceed budget
+
                 # Add point to path
                 points.append((next_x, next_y))
                 current_x, current_y = next_x, next_y
+                current_distance += actual_step_distance
 
                 # Update recent positions memory
                 recent_positions.append((current_x, current_y))
@@ -388,9 +384,11 @@ def generate_random_walk_path(
                 if distance_from_center >= max_radius * 0.95:  # 95% of max radius
                     break
 
-            # Break outer loop if we've reached the edge
+            # Break outer loop if we've reached the edge or budget limit
             distance_from_center = np.sqrt((current_x - center_x)**2 + (current_y - center_y)**2)
             if distance_from_center >= max_radius * 0.95:
+                break
+            if budget_per_drone is not None and current_distance >= budget_per_drone:
                 break
 
         # Create LineString for this drone's path
@@ -400,3 +398,126 @@ def generate_random_walk_path(
             paths.append(LineString())
 
     return paths
+
+def calculate_max_distance_in_paths(paths: list[LineString]) -> float:
+    """
+    Calculate the maximum distance covered by any path in the list.
+    Args:
+        paths (list[LineString]): List of LineString paths.
+    Returns:
+        float: Maximum distance covered by any path.
+    """
+    if not paths:
+        return 0.0
+    max_distance = 0.0
+    for path in paths:
+        if not path.is_empty:
+            distance = path.length
+            if distance > max_distance:
+                max_distance = distance
+    return max_distance
+
+def resample_path_to_length(path, target_length):
+    """
+    Resample a path to a specific target length by reducing the number of points.
+    """
+    if path.is_empty:
+        return path
+    original_length = path.length
+    if original_length <= target_length:
+        return path
+    num_points = max(2, int(target_length / (original_length / len(path.coords))))
+    distances = np.linspace(0, original_length, num_points)
+    new_points = [path.interpolate(distance) for distance in distances]
+    return LineString(new_points)
+
+def extend_path_to_length(path, target_length, step_length=10.0):
+    """
+    Extend a path to a specific target length by adding points.
+    """
+    if path.is_empty:
+        return path
+    current_length = path.length
+    coords = list(path.coords)
+    while current_length < target_length:
+        if len(coords) < 2:
+            break
+        last_point = Point(coords[-1])
+        second_last_point = Point(coords[-2])
+        dx = last_point.x - second_last_point.x
+        dy = last_point.y - second_last_point.y
+        
+        # Extend in the same direction
+        if dx != 0 or dy != 0:
+            norm = np.sqrt(dx**2 + dy**2)
+            dx_normalized = dx / norm
+            dy_normalized = dy / norm
+            new_x = last_point.x + dx_normalized * step_length
+            new_y = last_point.y + dy_normalized * step_length
+            coords.append((new_x, new_y))
+            current_length += step_length
+        else:
+            break
+    return LineString(coords)
+
+def apply_max_length_to_paths(paths: list[LineString], max_length: float) -> list[LineString]:
+    """
+    Apply max_length constraint to a list of paths, trimming them if necessary.
+    
+    Args:
+        paths: List of LineString paths
+        max_length: Maximum allowed length for any path (None = no limit)
+        
+    Returns:
+        List of LineString paths with length constraint applied
+    """
+    if max_length is None or max_length <= 0:
+        return paths
+    
+    result_paths = []
+    for path in paths:
+        if path.is_empty or path.length <= max_length:
+            result_paths.append(path)
+        else:
+            # Trim the path to max_length by interpolation
+            coords = list(path.coords)
+            if len(coords) < 2:
+                result_paths.append(path)
+                continue
+                
+            # Calculate distances along the path
+            distances = [0]
+            for i in range(1, len(coords)):
+                dist = np.sqrt((coords[i][0] - coords[i-1][0])**2 +
+                              (coords[i][1] - coords[i-1][1])**2)
+                distances.append(distances[-1] + dist)
+            
+            # Find the point at max_length distance
+            if distances[-1] <= max_length:
+                result_paths.append(path)
+            else:
+                # Find interpolation point
+                new_coords = []
+                cumulative_dist = 0
+                
+                for i in range(len(coords) - 1):
+                    new_coords.append(coords[i])
+                    segment_dist = distances[i+1] - distances[i]
+                    
+                    if cumulative_dist + segment_dist >= max_length:
+                        # Interpolate the final point
+                        remaining_dist = max_length - cumulative_dist
+                        ratio = remaining_dist / segment_dist
+                        final_x = coords[i][0] + ratio * (coords[i+1][0] - coords[i][0])
+                        final_y = coords[i][1] + ratio * (coords[i+1][1] - coords[i][1])
+                        new_coords.append((final_x, final_y))
+                        break
+                    
+                    cumulative_dist += segment_dist
+                
+                if len(new_coords) >= 2:
+                    result_paths.append(LineString(new_coords))
+                else:
+                    result_paths.append(path)
+    
+    return result_paths

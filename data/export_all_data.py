@@ -114,19 +114,19 @@ def generate_all():
     base_output_dir = "sarenv_dataset"
 
     size_to_load = "xlarge"
-    # for id, lon, lat, climate, env_type in points:
-    #     out_dir = os.path.join(base_output_dir, str(id))
+    for id, lon, lat, climate, env_type in points:
+        out_dir = os.path.join(base_output_dir, str(id))
 
-    #     os.makedirs(out_dir, exist_ok=True)
-    #     log.info(f"Generating dataset for point ({lat}, {lon}) at {out_dir}")
+        os.makedirs(out_dir, exist_ok=True)
+        log.info(f"Generating dataset for point ({lat}, {lon}) at {out_dir}")
 
-    #     data_gen.export_dataset(
-    #         center_point=(lon, lat),
-    #         output_directory=out_dir,
-    #         environment_climate=climate,
-    #         environment_type=env_type,
-    #         meter_per_bin=30,
-    #     )
+        data_gen.export_dataset(
+            center_point=(lon, lat),
+            output_directory=out_dir,
+            environment_climate=climate,
+            environment_type=env_type,
+            meter_per_bin=30,
+        )
 
     for id, lon, lat, climate, env_type in points:
         out_dir = os.path.join(base_output_dir, str(id))
