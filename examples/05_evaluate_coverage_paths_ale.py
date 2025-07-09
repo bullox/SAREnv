@@ -5,12 +5,12 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 import numpy as np
-from shapely.geometry import Point
+from shapely.geometry import Point, LineString
 import sarenv
 from sarenv.analytics import paths, metrics
 from sarenv.utils import geo
 from sarenv.utils.plot import DEFAULT_COLOR, FEATURE_COLOR_MAP
-from sarenv.analytics.evaluator import ComparativeEvaluator
+from sarenv.analytics.evaluator import ComparativeDatasetEvaluator, ComparativeEvaluator
 
 log = sarenv.get_logger()
 
@@ -19,9 +19,9 @@ COLORS_BLUE = ["#68FFFC", "#0099FF", "#00008B"]
 
 
 # --- Parameters ---
-GRAPHS_DIR = "graphs"
+GRAPHS_DIR = "graphs/paths"
 DATASET_DIR = "sarenv_dataset/19"
-EVALUATION_SIZE = "small"
+EVALUATION_SIZE = "medium"  # Options: "small", "medium", "large", "xlarge"
 NUM_DRONES = 3
 NUM_VICTIMS = 100
 
@@ -34,26 +34,27 @@ TRANSITION_DISTANCE_M = 50.0
 PIZZA_BORDER_GAP_M = 15.0
 DISCOUNT_FACTOR = 0.999
 # DATASET_DIRS = [f"sarenv_dataset/{i}" for i in range(1, 61)]
-DATASET_DIRS = [f"sarenv_dataset/{i}" for i in range(1, 11)]
+DATASET_DIRS = [f"sarenv_dataset/{i}" for i in range(1, 4)]
 # Define all path generator lambdas as in your code, but with item passed for context if needed
+EXHAUSTIVE_PATH_NAMES = ["Spiral", "Concentric", "Pizza"]
 PATH_GENERATORS = {
-    "RandomWalk": lambda cx, cy, r, item: paths.generate_random_walk_path(
-        cx, cy, NUM_DRONES, item.heatmap, item.bounds, 3000
+    "RandomWalk": lambda cx, cy, r, item, max_length: paths.generate_random_walk_path(
+        cx, cy, NUM_DRONES, item.heatmap, item.bounds, max_length
     ),
     # "RandomNonColliding": lambda cx, cy, r, item: paths.generate_random_noncolliding_paths(
     #     cx, cy, r, NUM_DRONES, PATH_POINT_SPACING_M
     # ),
-    "Greedy": lambda cx, cy, r, item: paths.generate_greedy_path(
-        cx, cy, NUM_DRONES, item.heatmap, item.bounds
+    "Greedy": lambda cx, cy, r, item, max_length: paths.generate_greedy_path(
+        cx, cy, NUM_DRONES, item.heatmap, item.bounds, max_length
     ),
     # "Spiral": lambda cx, cy, r, item: paths.generate_spiral_path(
     #     cx, cy, r, FOV_DEGREES, ALTITUDE_METERS, OVERLAP_RATIO, NUM_DRONES, PATH_POINT_SPACING_M
     # ),
-    "Concentric": lambda cx, cy, r, item: paths.generate_concentric_circles_path(
-        cx, cy, r, FOV_DEGREES, ALTITUDE_METERS, OVERLAP_RATIO, NUM_DRONES, PATH_POINT_SPACING_M, TRANSITION_DISTANCE_M
+    "Concentric": lambda cx, cy, r, item, max_length: paths.generate_concentric_circles_path(
+        cx, cy, r, FOV_DEGREES, ALTITUDE_METERS, OVERLAP_RATIO, NUM_DRONES, PATH_POINT_SPACING_M, TRANSITION_DISTANCE_M, max_length
     ),
-    "Pizza": lambda cx, cy, r, item: paths.generate_pizza_zigzag_path(
-        cx, cy, r, NUM_DRONES, FOV_DEGREES, ALTITUDE_METERS, OVERLAP_RATIO, PATH_POINT_SPACING_M, PIZZA_BORDER_GAP_M
+    "Pizza": lambda cx, cy, r, item, max_length: paths.generate_pizza_zigzag_path(
+        cx, cy, r, NUM_DRONES, FOV_DEGREES, ALTITUDE_METERS, OVERLAP_RATIO, PATH_POINT_SPACING_M, PIZZA_BORDER_GAP_M, max_length
     )
 }
 
@@ -203,24 +204,38 @@ def plot_side_by_side(features_clipped, item, victims_gdf, generated_paths, name
     plt.close(fig)
 
 def plot_combined_metrics(
-    combined_likelihood,
-    combined_victims,
+    resample_distances,
+    resampled_combined_cumulative_likelihood,
+    resampled_combined_cumulative_victims,
     output_dir='graphs/plots',
     strategy_name='strategy'
 ):
+
+    resample_distances_km = np.array(resample_distances) / 1000.0  # Convert to km
+
     os.makedirs(output_dir, exist_ok=True)
     fig, ax1 = plt.subplots(figsize=(10, 6))
 
     color_likelihood = '#1f77b4'  # Blue for likelihood
-    ax1.set_xlabel('Time Step')
+    ax1.set_xlabel('Distance Covered (km)')
     ax1.set_ylabel('Total Accumulated Likelihood', color=color_likelihood)
-    ax1.plot(combined_likelihood, color=color_likelihood, label='Total Accumulated Likelihood')
+    ax1.plot(
+        resample_distances_km,
+        resampled_combined_cumulative_likelihood,
+        color=color_likelihood,
+        label='Total Accumulated Likelihood'
+    )
     ax1.tick_params(axis='y', labelcolor=color_likelihood)
 
     ax2 = ax1.twinx()  # Create a second y-axis sharing the same x-axis
     color_victims = "#ff0e0e"  # Red for victims
     ax2.set_ylabel('Total Victims Found', color=color_victims)
-    ax2.plot(combined_victims, color=color_victims, label='Total Victims Found')
+    ax2.plot(
+        resample_distances_km,
+        resampled_combined_cumulative_victims,
+        color=color_victims,
+        label='Total Victims Found'
+    )
     ax2.tick_params(axis='y', labelcolor=color_victims)
 
     plt.title(f'Combined Metrics for {strategy_name}')
@@ -231,13 +246,16 @@ def plot_combined_metrics(
     lines_2, labels_2 = ax2.get_legend_handles_labels()
     ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper left')
 
-    filename = os.path.join(output_dir, f'{strategy_name}_combined_metrics.pdf')
+    filename = os.path.join(output_dir, f'{strategy_name.lower()}_{EVALUATION_SIZE}_{NUM_DRONES}drones_{NUM_VICTIMS}victims_combined_metrics.pdf')
     plt.savefig(filename)
     plt.close()
     print(f"Combined plot saved to {filename}")
 
+def crop_paths_to_length(paths, length):
+    # Crop each LineString to the specified length
+    return [LineString(list(path.coords)[:length]) for path in paths]
+
 def run_evaluation():
-    log.info("--- Starting Multi-Drone Path Evaluation and Visualization ---")
     os.makedirs(GRAPHS_DIR, exist_ok=True)
     
     try:
@@ -264,17 +282,38 @@ def run_evaluation():
             FOV_DEGREES,
             ALTITUDE_METERS,
             loader._meter_per_bin
-        )        
+        )
         center_proj = gpd.GeoDataFrame(geometry=[Point(item.center_point)], crs="EPSG:4326").to_crs(data_crs).geometry.iloc[0]
         center_x, center_y = center_proj.x, center_proj.y
         max_radius_m = item.radius_km * 1000
 
         path_generators = PATH_GENERATORS
-        
-        # 4. Evaluate and Visualize Each Path
+
+        # Generate 
+        all_generated_paths = {}
+        all_paths_flat = []
+        exhaustive_paths_max_distance = 0
         for name, generator in path_generators.items():
+            if name not in EXHAUSTIVE_PATH_NAMES:
+                continue  # Skip non-exhaustive paths for this evaluation
+            generated_paths = generator(
+                center_x, center_y, max_radius_m, item, None
+            )
+            generated_paths_max_distance = paths.calculate_max_distance_in_paths(generated_paths)
+            if (generated_paths_max_distance > exhaustive_paths_max_distance):
+                exhaustive_paths_max_distance = generated_paths_max_distance
+
+        # Generate all again with max_length
+        for name, generator in path_generators.items():
+            generated_paths = generator(
+                center_x, center_y, max_radius_m, item, exhaustive_paths_max_distance
+            )
+            all_generated_paths[name] = generated_paths
+            all_paths_flat.extend(generated_paths)
+
+        # 4. Evaluate and Visualize Each Path
+        for name, generated_paths in all_generated_paths.items():
             log.info(f"--- Evaluating '{name}' Path ---")
-            generated_paths = generator()
             
             all_metrics = evaluator.calculate_all_metrics(generated_paths, discount_factor=0.999)
             likelihood = all_metrics['total_likelihood_score']
@@ -296,9 +335,9 @@ def run_evaluation():
             y_min, y_max = center_y - max_radius_m, center_y + max_radius_m
 
             # File names
-            output_file_left = os.path.join(GRAPHS_DIR, f"path_{name.lower()}_features_clipped.pdf")
-            output_file_right = os.path.join(GRAPHS_DIR, f"path_{name.lower()}_heatmap.pdf")
-            output_file_side = os.path.join(GRAPHS_DIR, f"path_{name.lower()}_side_by_side_clipped.pdf")
+            output_file_left = os.path.join(GRAPHS_DIR, f"path_{name.lower()}_{EVALUATION_SIZE}_{NUM_DRONES}drones_{NUM_VICTIMS}victims_features_map.pdf")
+            output_file_right = os.path.join(GRAPHS_DIR, f"path_{name.lower()}_{EVALUATION_SIZE}_{NUM_DRONES}drones_{NUM_VICTIMS}victims_heatmap.pdf")
+            output_file_side = os.path.join(GRAPHS_DIR, f"path_{name.lower()}_{EVALUATION_SIZE}_{NUM_DRONES}drones_{NUM_VICTIMS}victims_side_by_side.pdf")
 
             # Plot and save visualizations
             log.info(f"Generating plots for {name} path...")
@@ -315,13 +354,14 @@ def run_evaluation():
                 x_min, x_max, y_min, y_max, output_file_side
             )
             log.info(f"Saved visualizations for {name} to '{GRAPHS_DIR}/'")
-
-            # plot_combined_metrics(
-            #     all_metrics['combined_cumulative_likelihood'],
-            #     all_metrics['combined_cumulative_victims'],
-            #     output_dir='graphs/plots',
-            #     strategy_name= name.lower()
-            # )
+            
+            plot_combined_metrics(
+                all_metrics['resample_distances'],
+                all_metrics['resampled_combined_cumulative_likelihood'],
+                all_metrics['resampled_combined_cumulative_victims'],
+                output_dir='graphs/plots',
+                strategy_name=name
+            )
 
     except Exception as e:
         log.error(f"An unexpected error occurred: {e}", exc_info=True)
@@ -329,39 +369,44 @@ def run_evaluation():
 if __name__ == "__main__":
     log.info("--- Starting Multi-Drone Path Evaluation and Visualization ---")
     run_evaluation()
+    log.info("--- Finished Multi-Drone Path Evaluation and Visualization ---")
 
 
-    log.info("--- Starting Dataset Evaluation ---")
-    evaluator = metrics.DatasetEvaluator(
-        dataset_dirs=DATASET_DIRS,
-        path_generators=PATH_GENERATORS,
-        num_victims=NUM_VICTIMS,
-        evaluation_size=EVALUATION_SIZE,
-        fov_degrees=FOV_DEGREES,
-        altitude_meters=ALTITUDE_METERS,
-        overlap_ratio=OVERLAP_RATIO,
-        num_drones=NUM_DRONES,
-        path_point_spacing_m=PATH_POINT_SPACING_M,
-        transition_distance_m=TRANSITION_DISTANCE_M,
-        pizza_border_gap_m=PIZZA_BORDER_GAP_M,
-        discount_factor=DISCOUNT_FACTOR
-    )
-    evaluator.evaluate()
-
-    # log.info("--- Initializing the Search and Rescue Toolkit ---")
-    # data_dir = "sarenv_dataset/1"  # Path to the dataset directory
-
+    # log.info("--- Starting Comparative Dataset Evaluator ---")
     # # 1. Initialize the evaluator
-    # evaluator = ComparativeEvaluator(
-    #     dataset_directory=data_dir,
-    #     evaluation_sizes=["large"], # Use a single size for a quick test
-    #     num_drones=5,
-    #     num_lost_persons=100,
+    # evaluator = ComparativeDatasetEvaluator(
+    #     dataset_dirs=DATASET_DIRS,
+    #     path_generators=PATH_GENERATORS,
+    #     num_victims=NUM_VICTIMS,
+    #     evaluation_size=EVALUATION_SIZE,
+    #     fov_degrees=FOV_DEGREES,
+    #     altitude_meters=ALTITUDE_METERS,
+    #     overlap_ratio=OVERLAP_RATIO,
+    #     num_drones=NUM_DRONES,
+    #     path_point_spacing_m=PATH_POINT_SPACING_M,
+    #     transition_distance_m=TRANSITION_DISTANCE_M,
+    #     pizza_border_gap_m=PIZZA_BORDER_GAP_M,
+    #     discount_factor=DISCOUNT_FACTOR
     # )
 
     # # 2. Run the evaluations
-    # baseline_results = evaluator.run_baseline_evaluations()
+    # baseline_results = evaluator.evaluate()
 
-    # # 3. Plot the results from the baseline run
-    # if baseline_results is not None and not baseline_results.empty:
-    #     evaluator.plot_results(baseline_results)
+    # # 3. Show summary of results
+    # per_dataset_results_df = evaluator.get_results_per_dataset()
+    # summarized_results_df = evaluator.summarize_results()
+    # log.info("--- Summary of Results ---")
+    # print(summarized_results_df)
+
+    # # 4. Save results to CSV
+    # per_dataset_results_csv_path = os.path.join("graphs/comparative_plots", f'per_dataset_comparative_evaluation_results_{EVALUATION_SIZE}.csv')
+    # summarized_results_csv_path = os.path.join("graphs/comparative_plots", f'summarized_comparative_evaluation_results_{EVALUATION_SIZE}.csv')
+    # per_dataset_results_df.to_csv(per_dataset_results_csv_path, index=False)
+    # summarized_results_df.to_csv(summarized_results_csv_path, index=False)
+    # log.info(f"Results saved to {per_dataset_results_csv_path} and {summarized_results_csv_path}")
+
+    # # 5. Generate comparative plots
+    # # evaluator.plot_aggregate_bars(output_dir="graphs/comparative_plots")
+    # evaluator.plot_combined_normalized_bars(output_dir="graphs/comparative_plots")
+    # evaluator.plot_time_series_with_ci(output_dir="graphs/comparative_plots")
+    # log.info("--- Finished Comparative Dataset Evaluator ---")

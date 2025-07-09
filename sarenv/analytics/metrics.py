@@ -6,119 +6,8 @@ import os
 import numpy as np
 import geopandas as gpd
 import matplotlib.pyplot as plt
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RegularGridInterpolator, interp1d
 from shapely.geometry import Point, LineString, MultiLineString
-from scipy import stats
-import sarenv
-from sarenv.utils import geo
-
-class DatasetEvaluator:
-    def __init__(self, dataset_dirs, path_generators, num_victims, evaluation_size, fov_degrees, altitude_meters, overlap_ratio, num_drones, path_point_spacing_m, transition_distance_m, pizza_border_gap_m, discount_factor):
-        self.dataset_dirs = dataset_dirs
-        self.path_generators = path_generators
-        self.num_victims = num_victims
-        self.evaluation_size = evaluation_size
-        self.fov_degrees = fov_degrees
-        self.altitude_meters = altitude_meters
-        self.overlap_ratio = overlap_ratio
-        self.num_drones = num_drones
-        self.path_point_spacing_m = path_point_spacing_m
-        self.transition_distance_m = transition_distance_m
-        self.pizza_border_gap_m = pizza_border_gap_m
-        self.discount_factor = discount_factor
-
-    def evaluate(self):
-        # Collect results for each strategy
-        strategy_results = {name: [] for name in self.path_generators}
-
-        for dataset_dir in self.dataset_dirs:
-            loader = sarenv.DatasetLoader(dataset_directory=dataset_dir)
-            item = loader.load_environment(self.evaluation_size)
-            if not item:
-                continue
-
-            data_crs = geo.get_utm_epsg(item.center_point[0], item.center_point[1])
-            victim_generator = sarenv.LostPersonLocationGenerator(item)
-            victim_points = [p for p in (victim_generator.generate_location() for _ in range(self.num_victims)) if p]
-            victims_gdf = gpd.GeoDataFrame(geometry=victim_points, crs=data_crs) if victim_points else gpd.GeoDataFrame(columns=['geometry'], crs=data_crs)
-
-            evaluator = PathEvaluator(
-                item.heatmap,
-                item.bounds,
-                victims_gdf,
-                self.fov_degrees,
-                self.altitude_meters,
-                loader._meter_per_bin
-            )
-            center_proj = gpd.GeoDataFrame(geometry=[Point(item.center_point)], crs="EPSG:4326").to_crs(data_crs).geometry.iloc[0]
-            center_x, center_y = center_proj.x, center_proj.y
-            max_radius_m = item.radius_km * 1000
-
-            # Generate and evaluate all path strategies
-            for name, generator in self.path_generators.items():
-                paths = generator(center_x, center_y, max_radius_m, item)
-                results = evaluator.calculate_all_metrics(paths, self.discount_factor)
-                strategy_results[name].append(results)
-
-        # Aggregate and plot
-        for name, results_list in strategy_results.items():
-            if not results_list:
-                continue
-            self._aggregate_and_plot(name, results_list)
-
-    def _aggregate_and_plot(self, strategy_name, results_list):
-        # Gather arrays for averaging
-        combined_likelihoods = [r['combined_cumulative_likelihood'] for r in results_list]
-        combined_victims = [r['combined_cumulative_victims'] for r in results_list]
-
-        def mean_ci(arrays):
-            max_len = max(len(a) for a in arrays)
-            padded = [np.pad(a, (0, max_len - len(a)), mode='edge') if len(a) < max_len else a for a in arrays]
-            data = np.vstack(padded)
-            mean = np.mean(data, axis=0)
-            sem = stats.sem(data, axis=0)
-            h = sem * stats.t.ppf((1 + 0.95) / 2., data.shape[0] - 1)
-            return mean, mean - h, mean + h
-
-        mean_likelihood, ci_low_likelihood, ci_high_likelihood = mean_ci(combined_likelihoods)
-        mean_victims, ci_low_victims, ci_high_victims = mean_ci(combined_victims)
-
-        self._plot_with_ci(
-            mean_likelihood, ci_low_likelihood, ci_high_likelihood,
-            mean_victims, ci_low_victims, ci_high_victims,
-            strategy_name
-        )
-
-    def _plot_with_ci(self, mean_likelihood, ci_low_likelihood, ci_high_likelihood, mean_victims, ci_low_victims, ci_high_victims, strategy_name):
-        output_dir = 'graphs/plots'
-        os.makedirs(output_dir, exist_ok=True)
-        fig, ax1 = plt.subplots(figsize=(10, 6))
-
-        color_likelihood = 'tab:blue'
-        ax1.set_xlabel('Time Step')
-        ax1.set_ylabel('Average Accumulated Likelihood (%)', color=color_likelihood)
-        ax1.plot(100 * mean_likelihood, color=color_likelihood, label='Avg Accumulated Likelihood')
-        ax1.fill_between(
-            range(len(mean_likelihood)),
-            100 * ci_low_likelihood, 100 * ci_high_likelihood,
-            color=color_likelihood, alpha=0.3
-        )
-        ax1.tick_params(axis='y', labelcolor=color_likelihood)
-
-        ax2 = ax1.twinx()
-        color_victims = 'tab:red'
-        ax2.set_ylabel('Average Victims Found', color=color_victims)
-        ax2.plot(mean_victims, color=color_victims, label='Avg Victims Found')
-        ax2.fill_between(range(len(mean_victims)), ci_low_victims, ci_high_victims, color=color_victims, alpha=0.3)
-        ax2.tick_params(axis='y', labelcolor=color_victims)
-
-        plt.title(f'Average Combined Metrics with 95% CI for {strategy_name}')
-        fig.tight_layout()
-        filename = os.path.join(output_dir, f'{strategy_name}_{self.evaluation_size}_average_combined_metrics.pdf')
-        plt.savefig(filename)
-        plt.close()
-
-        
 
 class PathEvaluator:
     """
@@ -175,8 +64,29 @@ class PathEvaluator:
 
         return cumulative_counts, found_victim_sets
 
+    def _resample_metric_by_distance(self, original_distances, original_values, new_distances):
+        # Handles both 1D arrays and list-of-sets (for victim sets)
+        if len(original_distances) == 1:
+            # Path is a single point, just repeat value
+            if isinstance(original_values[0], set):
+                return [original_values[0] for _ in new_distances]
+            else:
+                return np.full_like(new_distances, original_values[0], dtype=float)
+        if isinstance(original_values[0], set):
+            # For sets, use the set at the last distance less than or equal to each new_distance
+            idxs = np.searchsorted(original_distances, new_distances, side='right') - 1
+            idxs = np.clip(idxs, 0, len(original_values) - 1)
+            return [original_values[i] for i in idxs]
+        else:
+            interp_func = interp1d(original_distances, original_values, kind='linear', bounds_error=False, fill_value=(original_values[0], original_values[-1]))
+            return interp_func(new_distances)
+
     def calculate_all_metrics(self, paths: list, discount_factor) -> dict:
-        total_likelihood = 0
+        """
+        Calculates metrics for given paths using a probability map (heatmap).
+        Ensures each grid cell is only counted once for total likelihood.
+        Uses the same grid mapping as in generate_greedy_path.
+        """
         total_time_discounted_score = 0
 
         cumulative_distances_all_paths = []
@@ -184,6 +94,31 @@ class PathEvaluator:
         cumulative_discounted_scores_all_paths = []
         cumulative_victims_found_all_paths = []
         self.per_path_found_victim_indices = []
+
+        # --- Setup grid mapping as in generate_greedy_path ---
+        probability_map = self.heatmap
+        height, width = probability_map.shape
+        minx, miny, maxx, maxy = self.extent
+
+        x_map = np.linspace(minx + (maxx - minx) / (2 * width), maxx - (maxx - minx) / (2 * width), width)
+        y_map = np.linspace(miny + (maxy - miny) / (2 * height), maxy - (maxy - miny) / (2 * height), height)
+
+        def coord_to_index(coord):
+            """Convert (y, x) coordinate to (row, col) index in the heatmap."""
+            y, x = coord
+            # Find nearest index in y_map and x_map
+            row = np.argmin(np.abs(y_map - y))
+            col = np.argmin(np.abs(x_map - x))
+            # Clamp to grid
+            row = max(0, min(row, height - 1))
+            col = max(0, min(col, width - 1))
+            return (row, col)
+
+        # --- Track unique visited indices ---
+        visited_indices = set()
+        unique_likelihood_sum = 0
+
+        max_path_length = 0
 
         for path in paths:
             if path.is_empty or path.length == 0:
@@ -199,8 +134,12 @@ class PathEvaluator:
             points = [path.interpolate(d) for d in distances]
             point_coords = [(p.y, p.x) for p in points]
 
-            likelihoods = self.interpolator(point_coords)
-            total_likelihood += np.sum(likelihoods)
+            # Interpolate likelihoods at each point using the heatmap
+            likelihoods = []
+            for coord in point_coords:
+                row, col = coord_to_index(coord)
+                likelihoods.append(probability_map[row, col])
+            likelihoods = np.array(likelihoods)
 
             discounts = discount_factor ** distances
             discounted_likelihoods = likelihoods * discounts
@@ -215,14 +154,51 @@ class PathEvaluator:
             cumulative_victims_found_all_paths.append(cumulative_counts)
             self.per_path_found_victim_indices.append(found_victim_sets)
 
+            # --- Only count each heatmap cell once ---
+            for idx, coord in enumerate(point_coords):
+                row, col = coord_to_index(coord)
+                if (row, col) not in visited_indices:
+                    visited_indices.add((row, col))
+                    unique_likelihood_sum += probability_map[row, col]
+
+            max_path_length = max(max_path_length, path.length)
+
         victim_metrics = self._calculate_victims_found_score(paths)
 
-        total_heatmap_prob = np.sum(self.heatmap)
+        total_heatmap_prob = np.sum(probability_map)
         normalized_cumulative_likelihoods = [arr / total_heatmap_prob for arr in cumulative_likelihoods_all_paths]
-        normalized_total_likelihood = total_likelihood / total_heatmap_prob
+        normalized_total_likelihood = unique_likelihood_sum / total_heatmap_prob
 
         combined_cumulative_likelihood, combined_cumulative_victims = self._calculate_combined_metrics(
             normalized_cumulative_likelihoods
+        )
+
+        # --- RESAMPLING TO 10-METER STEPS ---
+        step = 10
+        resample_distances = np.arange(0, max_path_length + step, step)
+
+        # Per-path resampled metrics
+        resampled_cumulative_likelihoods = []
+        resampled_cumulative_victims_found = []
+        for dists, likes, vics, sets in zip(
+            cumulative_distances_all_paths,
+            normalized_cumulative_likelihoods,
+            cumulative_victims_found_all_paths,
+            self.per_path_found_victim_indices,
+        ):
+            resampled_cumulative_likelihoods.append(
+                self._resample_metric_by_distance(dists, likes, resample_distances)
+            )
+            resampled_cumulative_victims_found.append(
+                self._resample_metric_by_distance(dists, vics, resample_distances)
+            )
+
+        # Combined resampled metrics
+        resampled_combined_cumulative_likelihood = self._resample_metric_by_distance(
+            resample_distances[:len(combined_cumulative_likelihood)], combined_cumulative_likelihood, resample_distances
+        )
+        resampled_combined_cumulative_victims = self._resample_metric_by_distance(
+            resample_distances[:len(combined_cumulative_victims)], combined_cumulative_victims, resample_distances
         )
 
         results = {
@@ -235,6 +211,12 @@ class PathEvaluator:
             'cumulative_victims_found': cumulative_victims_found_all_paths,
             'combined_cumulative_likelihood': combined_cumulative_likelihood,
             'combined_cumulative_victims': combined_cumulative_victims,
+            # New: resampled metrics at 10m steps
+            'resample_distances': resample_distances,
+            'resampled_cumulative_likelihoods': resampled_cumulative_likelihoods,
+            'resampled_cumulative_victims_found': resampled_cumulative_victims_found,
+            'resampled_combined_cumulative_likelihood': resampled_combined_cumulative_likelihood,
+            'resampled_combined_cumulative_victims': resampled_combined_cumulative_victims,
         }
         return results
 
