@@ -724,6 +724,8 @@ class DataGenerator:
         bell_curve_map = (1 / (dist_km * sigma * np.sqrt(2 * np.pi))) * np.exp(
             -((np.log(dist_km) - mu) ** 2) / (2 * sigma**2)
         )
+        # Normalize the spatial map
+        spatial_probability_map = bell_curve_map / bell_curve_map.sum()
 
         # 4b. Normalize the feature-based heatmap
         feature_heatmap_sum = np.sum(feature_heatmap)
@@ -738,7 +740,7 @@ class DataGenerator:
 
         # 4c. Combine maps and normalize
         log.info("Combining feature and distance maps...")
-        combined_map_unnormalized = bell_curve_map * feature_prob_map
+        combined_map_unnormalized = spatial_probability_map * feature_prob_map
         total_sum = np.sum(combined_map_unnormalized)
         if total_sum > 0:
             final_probability_map = combined_map_unnormalized / total_sum
