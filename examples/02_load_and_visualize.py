@@ -24,7 +24,7 @@ def run_loading_example():
 
         if item:
             # INSERT YOUR CODE HERE OR USE THE PROVIDED FUNCTIONS
-            # visualize_heatmap(item, plot_basemap=False, plot_inset=True)
+            visualize_heatmap(item, plot_basemap=False, plot_inset=True)
             visualize_features(item, plot_basemap=False, plot_inset=True, num_lost_persons=300)
         else:
             log.error(f"Could not load the specified size: '{size_to_load}'")

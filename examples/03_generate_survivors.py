@@ -1,28 +1,24 @@
 import contextily as cx
 import geopandas as gpd
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, Circle
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 from sarenv import (
     DatasetLoader,
     LostPersonLocationGenerator,
     get_logger,
 )
 from sarenv.utils.plot import DEFAULT_COLOR, FEATURE_COLOR_MAP
+from shapely.geometry import Point
 
 log = get_logger()
 
-def run_lost_person_generation_example(num_locations=1000, size_to_load="small"):
-    """
-    An example demonstrating how to load a dataset, generate lost_person
-    locations, and visualize them.
-
-    Args:
-        num_locations (int): The number of lost_person locations to generate.
-        size_to_load (str): The dataset size to use for the environment.
-    """
+if __name__ == "__main__":
     log.info("--- Starting lost_person Location Generation Example ---")
 
-    dataset_dir = "sarenv_dataset"
+    dataset_dir = "sarenv_dataset/16"
+    size_to_load = "xlarge"
+    num_locations = 100
 
     try:
         # 1. Load the dataset for a specific size
@@ -32,7 +28,6 @@ def run_lost_person_generation_example(num_locations=1000, size_to_load="small")
 
         if not dataset_item:
             log.error(f"Could not load the dataset for size '{size_to_load}'.")
-            return
 
         # 2. Initialize the lost_person location generator with the loaded data
         log.info("Initializing the lost_personLocationGenerator.")
@@ -44,34 +39,6 @@ def run_lost_person_generation_example(num_locations=1000, size_to_load="small")
 
         if not locations:
             log.error("No lost_person locations were generated. Cannot visualize.")
-            return
-
-        # 4. Visualize the results
-        log.info("Visualizing the generated locations...")
-        fig, ax = plt.subplots(figsize=(15, 15))
-
-        # Plot the features from the dataset
-        legend_handles = []
-        for feature_type, data in dataset_item.features.groupby("feature_type"):
-            color = FEATURE_COLOR_MAP.get(feature_type, DEFAULT_COLOR)
-            data.plot(ax=ax, color=color, label=feature_type.capitalize(), alpha=0.6)
-            legend_handles.append(Patch(color=color, label=feature_type.capitalize()))
-
-        # Plot the generated lost_person locations
-        lost_person_gdf = gpd.GeoDataFrame(geometry=locations, crs=dataset_item.features.crs)
-        lost_person_gdf.plot(ax=ax, marker='*', color='red', markersize=250, zorder=10, label="Lost Person")
-        legend_handles.append(plt.Line2D([0], [0], marker='*', color='w', markerfacecolor='red', markersize=15, label='Lost Person'))
-
-        # Add basemap for context
-        cx.add_basemap(ax, crs=lost_person_gdf.crs.to_string(), source=cx.providers.OpenStreetMap.Mapnik)
-
-        ax.legend(handles=legend_handles, title="Legend", loc="upper left")
-        ax.set_title(f"Generated Lost Person Locations within '{size_to_load.capitalize()}' Area")
-        ax.set_xlabel("Easting (meters)")
-        ax.set_ylabel("Northing (meters)")
-
-        plt.tight_layout()
-        plt.savefig(f"lost_person_locations_{size_to_load}.pdf")
 
     except FileNotFoundError:
         log.error(
@@ -83,7 +50,3 @@ def run_lost_person_generation_example(num_locations=1000, size_to_load="small")
     except Exception as e:
         log.error(f"An unexpected error occurred: {e}", exc_info=True)
 
-
-if __name__ == "__main__":
-    # Before running this, ensure you have run basic_usage_example.py to create the dataset
-    run_lost_person_generation_example(num_locations=1000, size_to_load="xlarge")

@@ -15,6 +15,7 @@ from .utils.lost_person_behavior import (
     ENVIRONMENT_TYPE_FLAT,
     ENVIRONMENT_TYPE_MOUNTAINOUS,
 )
+from .utils.plot import visualize_heatmap, visualize_features
 
 __all__ = [
     "ComparativeEvaluator",
@@ -23,9 +24,11 @@ __all__ = [
     "SARDatasetItem",
     "LostPersonLocationGenerator",
     "get_logger",
-    ENVIRONMENT_TYPE_FLAT,
-    ENVIRONMENT_TYPE_MOUNTAINOUS,
-    CLIMATE_DRY,
-    CLIMATE_TEMPERATE,
-    FEATURE_PROBABILITIES,
+    "ENVIRONMENT_TYPE_FLAT",
+    "ENVIRONMENT_TYPE_MOUNTAINOUS",
+    "CLIMATE_DRY",
+    "CLIMATE_TEMPERATE",
+    "FEATURE_PROBABILITIES",
+    "visualize_heatmap",
+    "visualize_features",
 ]
