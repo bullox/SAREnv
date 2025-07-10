@@ -8,22 +8,6 @@ from sarenv.analytics import paths
 
 log = sarenv.get_logger()
 
-# --- Parameters ---
-EVALUATION_SIZE = "medium"  # Options: "small", "medium", "large", "xlarge"
-NUM_DRONES = 3
-NUM_VICTIMS = 100
-
-# Drone/Path Parameters
-FOV_DEGREES = 45.0
-ALTITUDE_METERS = 80.0
-OVERLAP_RATIO = 0.25
-PATH_POINT_SPACING_M = 10.0
-TRANSITION_DISTANCE_M = 50.0
-PIZZA_BORDER_GAP_M = 15.0
-DISCOUNT_FACTOR = 0.999
-DATASET_DIRS = [f"sarenv_dataset/{i}" for i in range(1,5)]
-
-
 def create_custom_path_generator():
     """
     Example of how to create a custom path generator.
@@ -54,10 +38,11 @@ def create_custom_path_generator():
 
 if __name__ == "__main__":
     log.info("--- Starting Comparative Dataset Evaluator ---")
-
+    evaluation_size = "medium"  # Options: "small", "medium", "large", "xlarge"
+    
     # Example 1: Using default path generators
     evaluator_default = ComparativeDatasetEvaluator(
-        dataset_dirs=DATASET_DIRS, budget=200_000, num_drones=5,evaluation_size="medium" # Budget in meters
+        dataset_dirs=[f"sarenv_dataset/{i}" for i in range(1,60)], budget=165_000, num_drones=5,evaluation_size=evaluation_size # Budget in meters
     )
 
     # # Example 2: Using custom path generators
@@ -87,8 +72,8 @@ if __name__ == "__main__":
 
     # 4. Save results to CSV
     os.makedirs("graphs/comparative_plots", exist_ok=True)
-    per_dataset_results_csv_path = os.path.join("graphs/comparative_plots", f'per_dataset_comparative_evaluation_results_{EVALUATION_SIZE}.csv')
-    summarized_results_csv_path = os.path.join("graphs/comparative_plots", f'summarized_comparative_evaluation_results_{EVALUATION_SIZE}.csv')
+    per_dataset_results_csv_path = os.path.join("graphs/comparative_plots", f'per_dataset_comparative_evaluation_results_{evaluation_size}.csv')
+    summarized_results_csv_path = os.path.join("graphs/comparative_plots", f'summarized_comparative_evaluation_results_{evaluation_size}.csv')
     per_dataset_results_df.to_csv(per_dataset_results_csv_path, index=False)
     summarized_results_df.to_csv(summarized_results_csv_path, index=False)
     log.info(f"Results saved to {per_dataset_results_csv_path} and {summarized_results_csv_path}")
