@@ -51,6 +51,77 @@ FEATURE_COLOR_MAP = {
 }
 DEFAULT_COLOR = '#f0f0f0' # A very light, neutral default color.
 
+# Color palette for plotting multiple paths
+COLORS_BLUE = [
+    '#08519c',  # Dark blue
+    '#3182bd',  # Medium blue
+    '#6baed6',  # Light blue
+    '#9ecae1',  # Very light blue
+    '#c6dbef',  # Pale blue
+]
+
+# === PATH PLOTTING FUNCTIONS ===
+
+def plot_heatmap(item, victims_gdf, generated_paths, name, x_min, x_max, y_min, y_max, output_file):
+    """
+    Plot paths on a probability heatmap with victims marked.
+    
+    Args:
+        item (SARDatasetItem): The dataset item containing the heatmap
+        victims_gdf (GeoDataFrame): GeoDataFrame containing victim locations
+        generated_paths (list): List of path geometries to plot
+        name (str): Name/title for the plot
+        x_min, x_max, y_min, y_max (float): Coordinate bounds for the plot
+        output_file (str): Path to save the output PDF file
+    """
+    fig, ax = plt.subplots(figsize=(9, 9))
+    
+    # Plot heatmap if available
+    if item.heatmap is not None:
+        ax.imshow(
+            item.heatmap,
+            extent=[x_min, x_max, y_min, y_max],
+            cmap='YlOrRd',
+            alpha=0.7,
+            origin='lower'
+        )
+    
+    # Plot victims if available
+    if not victims_gdf.empty:
+        victims_gdf.plot(ax=ax, color='red', marker='x', markersize=50, label='Victims', zorder=5)
+    
+    # Plot paths
+    colors = COLORS_BLUE
+    line_width = 3.0
+    for idx, path in enumerate(generated_paths):
+        color = colors[idx % len(colors)]
+        if path.geom_type == 'MultiLineString':
+            for line in path.geoms:
+                x, y = line.xy
+                ax.plot(x, y, color=color, linewidth=line_width, zorder=10)
+        else:
+            x, y = path.xy
+            ax.plot(x, y, color=color, linewidth=line_width, zorder=10)
+    
+    # Format axes
+    x_ticks = ax.get_xticks()
+    y_ticks = ax.get_yticks()
+    ax.set_xticklabels([f"{x/1000:.1f}" for x in x_ticks])
+    ax.set_yticklabels([f"{y/1000:.1f}" for y in y_ticks])
+    ax.set_xlabel("Easting (km)")
+    ax.set_ylabel("Northing (km)")
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.set_aspect('equal')
+    
+    if not victims_gdf.empty:
+        ax.legend()
+    
+    # Save the plot
+    fig.savefig(output_file, format='pdf', dpi=200, bbox_inches='tight')
+    plt.close(fig)
+    log.info(f"Saved heatmap plot to {output_file}")
+
 # === EVALUATION PLOTTING FUNCTIONS ===
 
 def plot_aggregate_bars(summary_df, evaluation_size, output_dir="graphs/aggregate"):

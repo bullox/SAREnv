@@ -43,8 +43,8 @@ class PathEvaluator:
 
     def calculate_all_metrics(self, paths: list[LineString], discount_factor) -> dict:
         """
-        Calculates all metrics for a given list of paths by collecting all points
-        first and then calculating unique likelihood scores.
+        Calculates all metrics for a given list of paths using a view model that considers
+        the detection radius to determine which grid cells are visible from each position.
 
         Args:
             paths (list[LineString]): A list of Shapely LineString objects representing the drone paths.
@@ -61,139 +61,107 @@ class PathEvaluator:
                   - 'cumulative_likelihoods' (list of arrays)
                   - 'cumulative_time_discounted_scores' (list of arrays)
         """
-        # First pass: collect all points from all paths with their metadata
-        all_points_data = []
+        # Track globally observed cells using the view model
+        globally_observed_cells = set()
+        all_position_data = []
         path_metadata = []
         global_time_offset = 0
 
-
+        # First pass: collect all positions and their visible cells
         for path_idx, path in enumerate(paths):
             if path.is_empty or path.length == 0:
                 path_metadata.append({
                     'path_idx': path_idx,
                     'distances': np.array([0]),
-                    'point_coords': [],
+                    'positions': [],
                     'global_distances': np.array([0]),
-                    'start_idx': len(all_points_data),
-                    'end_idx': len(all_points_data)
+                    'visible_cells_per_position': []
                 })
                 continue
 
             num_points = int(np.ceil(path.length / self.interpolation_resolution)) + 1
             distances = np.linspace(0, path.length, num_points)
             points = [path.interpolate(d) for d in distances]
-            point_coords = [(p.y, p.x) for p in points]
+            positions = [(p.x, p.y) for p in points]
 
             # Global distances for time-discounted scores
             global_distances = distances + global_time_offset
+
+            # Calculate visible cells for each position
+            visible_cells_per_position = []
+            for x, y in positions:
+                visible_cells = self.get_visible_cells(x, y)
+                visible_cells_per_position.append(visible_cells)
 
             # Store metadata for this path
             path_metadata.append({
                 'path_idx': path_idx,
                 'distances': distances,
-                'point_coords': point_coords,
+                'positions': positions,
                 'global_distances': global_distances,
-                'start_idx': len(all_points_data),
-                'end_idx': len(all_points_data) + len(point_coords)
+                'visible_cells_per_position': visible_cells_per_position
             })
 
-            # Add points to global collection with their metadata
-            for i, (y, x) in enumerate(point_coords):
-                # Use heatmap grid for cell_key calculation to avoid double-counting
-                minx, miny, _, _ = self.extent
-                heatmap_row = int((y - miny) / self.heatmap_cell_size_y)
-                heatmap_col = int((x - minx) / self.heatmap_cell_size_x)
-
-                # Ensure bounds safety
-                heatmap_row = max(0, min(heatmap_row, self.heatmap.shape[0] - 1))
-                heatmap_col = max(0, min(heatmap_col, self.heatmap.shape[1] - 1))
-
-                cell_key = (heatmap_row, heatmap_col)
-                all_points_data.append({
-                    'coords': (y, x),
-                    'cell_key': cell_key,
+            # Add positions to global collection
+            for i, ((x, y), visible_cells) in enumerate(zip(positions, visible_cells_per_position, strict=True)):
+                all_position_data.append({
+                    'position': (x, y),
+                    'visible_cells': visible_cells,
                     'path_idx': path_idx,
-                    'point_idx': i,
+                    'position_idx': i,
                     'global_distance': global_distances[i]
                 })
 
             global_time_offset += path.length
 
-        # Second pass: calculate likelihoods for all unique points
-        if all_points_data:
-            # Get all unique cell keys and their first occurrence
-            unique_cells = {}
-            for i, point_data in enumerate(all_points_data):
-                cell_key = point_data['cell_key']
-                if cell_key not in unique_cells:
-                    unique_cells[cell_key] = {
-                        'coords': point_data['coords'],
-                        'first_occurrence_idx': i
-                    }
+        # Second pass: calculate metrics using the view model
+        if all_position_data:
+            # Calculate total likelihood by tracking all observed cells
+            all_observed_cells = set()
+            for position_data in all_position_data:
+                all_observed_cells.update(position_data['visible_cells'])
 
-            # Calculate likelihoods for unique cells only
-            unique_coords = [data['coords'] for data in unique_cells.values()]
-            unique_likelihoods = self.interpolator(unique_coords)
+            # Calculate total likelihood (sum of all unique observed cells)
+            total_likelihood = sum(self.heatmap[row, col] for row, col in all_observed_cells)
 
-            # Create mapping from cell_key to likelihood
-            cell_likelihood_map = {}
-            for i, cell_key in enumerate(unique_cells.keys()):
-                cell_likelihood_map[cell_key] = unique_likelihoods[i]
-
-            # Calculate total likelihood (sum of all unique cells)
-            total_likelihood = np.sum(unique_likelihoods)
-
-            # Calculate time-discounted score for all points (including duplicates)
+            # Calculate time-discounted score considering all visible cells at each position
             total_time_discounted_score = 0
-            for point_data in all_points_data:
-                likelihood = cell_likelihood_map[point_data['cell_key']]
-                discount = discount_factor ** point_data['global_distance']
-                total_time_discounted_score += likelihood * discount
+            for position_data in all_position_data:
+                position_score = sum(self.heatmap[row, col] for row, col in position_data['visible_cells'])
+                discount = discount_factor ** position_data['global_distance']
+                total_time_discounted_score += position_score * discount
         else:
             total_likelihood = 0
             total_time_discounted_score = 0
 
         # Third pass: generate cumulative results for each path
-        # Track globally visited cells to avoid double-counting in cumulative metrics
-        globally_visited_cells = set()
         cumulative_distances_all_paths = []
         cumulative_likelihoods_all_paths = []
         cumulative_discounted_scores_all_paths = []
 
         for meta in path_metadata:
-            if not meta['point_coords']:
+            if not meta['positions']:
                 cumulative_distances_all_paths.append(np.array([0]))
                 cumulative_likelihoods_all_paths.append(np.array([0]))
                 cumulative_discounted_scores_all_paths.append(np.array([0]))
                 continue
 
-            # Get likelihoods for this path's points, only counting new cells
+            # Track cells observed by this path (without double-counting within the same path)
+            path_observed_cells = set()
             path_likelihoods = []
             path_discounted_likelihoods = []
 
-            for i, (y, x) in enumerate(meta['point_coords']):
-                # Use same heatmap grid calculation as above
-                minx, miny, _, _ = self.extent
-                heatmap_row = int((y - miny) / self.heatmap_cell_size_y)
-                heatmap_col = int((x - minx) / self.heatmap_cell_size_x)
+            for i, visible_cells in enumerate(meta['visible_cells_per_position']):
+                # Only count cells not yet observed in this path
+                new_cells = visible_cells - path_observed_cells
+                path_observed_cells.update(new_cells)
 
-                # Ensure bounds safety
-                heatmap_row = max(0, min(heatmap_row, self.heatmap.shape[0] - 1))
-                heatmap_col = max(0, min(heatmap_col, self.heatmap.shape[1] - 1))
-
-                cell_key = (heatmap_row, heatmap_col)
-
-                # Only count likelihood if this cell hasn't been visited by previous paths
-                if cell_key not in globally_visited_cells:
-                    likelihood = cell_likelihood_map[cell_key]
-                    globally_visited_cells.add(cell_key)
-                else:
-                    likelihood = 0.0  # Already counted by a previous path
-
+                # Calculate likelihood for new cells only
+                position_likelihood = sum(self.heatmap[row, col] for row, col in new_cells)
                 discount = discount_factor ** meta['distances'][i]
 
-                path_likelihoods.append(likelihood)
-                path_discounted_likelihoods.append(likelihood * discount)
+                path_likelihoods.append(position_likelihood)
+                path_discounted_likelihoods.append(position_likelihood * discount)
 
             cumulative_distances_all_paths.append(meta['distances'])
             cumulative_likelihoods_all_paths.append(np.cumsum(path_likelihoods))
@@ -283,3 +251,65 @@ class PathEvaluator:
 
         total_length = sum(path.length for path in valid_paths)
         return total_length / 1000  # Convert from meters to kilometers
+
+    def get_visible_cells(self, x: float, y: float) -> set[tuple[int, int]]:
+        """
+        Get all grid cells that are visible from a given position based on the detection radius.
+        
+        Args:
+            x (float): X coordinate in world space
+            y (float): Y coordinate in world space
+            
+        Returns:
+            set[tuple[int, int]]: Set of (row, col) tuples representing visible grid cells
+        """
+        minx, miny, maxx, maxy = self.extent
+        
+        # Convert detection radius to grid cells
+        radius_in_cells_x = int(np.ceil(self.detection_radius / self.heatmap_cell_size_x))
+        radius_in_cells_y = int(np.ceil(self.detection_radius / self.heatmap_cell_size_y))
+        
+        # Get the center cell position
+        center_col = int((x - minx) / self.heatmap_cell_size_x)
+        center_row = int((y - miny) / self.heatmap_cell_size_y)
+        
+        visible_cells = set()
+        
+        # Check all cells within the radius
+        for row in range(max(0, center_row - radius_in_cells_y),
+                        min(self.heatmap.shape[0], center_row + radius_in_cells_y + 1)):
+            for col in range(max(0, center_col - radius_in_cells_x),
+                            min(self.heatmap.shape[1], center_col + radius_in_cells_x + 1)):
+                
+                # Calculate the world coordinates of this cell's center
+                cell_x = minx + (col + 0.5) * self.heatmap_cell_size_x
+                cell_y = miny + (row + 0.5) * self.heatmap_cell_size_y
+                
+                # Check if this cell is within the detection radius
+                distance = np.sqrt((cell_x - x) ** 2 + (cell_y - y) ** 2)
+                if distance <= self.detection_radius:
+                    visible_cells.add((row, col))
+        
+        return visible_cells
+
+    def calculate_view_score_at_position(self, x: float, y: float, visited_cells: set[tuple[int, int]]) -> float:
+        """
+        Calculate the total likelihood score for all visible cells from a position,
+        excluding already visited cells.
+        
+        Args:
+            x (float): X coordinate in world space
+            y (float): Y coordinate in world space
+            visited_cells (set): Set of already visited (row, col) tuples
+            
+        Returns:
+            float: Total likelihood score for unvisited visible cells
+        """
+        visible_cells = self.get_visible_cells(x, y)
+        total_score = 0.0
+        
+        for row, col in visible_cells:
+            if (row, col) not in visited_cells:
+                total_score += self.heatmap[row, col]
+        
+        return total_score

@@ -45,7 +45,7 @@ class PathGeneratorConfig:
         self.num_drones = kwargs.pop('num_drones', 3)
         self.fov_degrees = kwargs.pop('fov_degrees', 45.0)
         self.altitude_meters = kwargs.pop('altitude_meters', 80.0)
-        self.overlap_ratio = kwargs.pop('overlap_ratio', 0.1)
+        self.overlap_ratio = kwargs.pop('overlap_ratio', 0)
         self.path_point_spacing_m = kwargs.pop('path_point_spacing_m', 10.0)
         self.transition_distance_m = kwargs.pop('transition_distance_m', 50.0)
         self.pizza_border_gap_m = kwargs.pop('pizza_border_gap_m', 15.0)
@@ -392,7 +392,7 @@ class ComparativeEvaluator:
             # "xlarge",
         ]
         self.num_victims = kwargs.get("num_lost_persons", 100)
-        self.path_generator_config:PathGeneratorConfig = kwargs.get("path_generator_config")
+        self.path_generator_config:PathGeneratorConfig = PathGeneratorConfig(**kwargs)
         self.num_drones = self.path_generator_config.num_drones if self.path_generator_config else kwargs.get("num_drones", 3)
         self.path_generators = kwargs.get("path_generators")
         use_defaults = kwargs.get("use_defaults", True)
@@ -401,10 +401,6 @@ class ComparativeEvaluator:
         self.environments = {}
         self.results = None
         self.time_series_data = {}
-
-        # Create path config if not provided
-        if self.path_generator_config is None:
-            self.path_generator_config = PathGeneratorConfig(num_drones=self.num_drones)
 
         # Set up path generators, defaulting if none are provided
         if self.path_generators is None:

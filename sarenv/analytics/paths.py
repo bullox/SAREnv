@@ -95,15 +95,54 @@ def generate_pizza_zigzag_path(center_x: float, center_y: float, max_radius: flo
 def generate_greedy_path(center_x: float, center_y: float, num_drones: int, probability_map: np.ndarray, bounds: tuple, max_radius: float, **kwargs) -> list[LineString]:
     height, width = probability_map.shape
     minx, miny, maxx, maxy = bounds
+    rng = np.random.default_rng()
 
     if maxx <= minx or maxy <= miny:
         return [LineString() for _ in range(num_drones)]
+
+    # Extract view model parameters
+    fov_deg = kwargs.get('fov_deg', 45.0)
+    altitude = kwargs.get('altitude', 80.0)
+    detection_radius = altitude * np.tan(np.radians(fov_deg / 2))
 
     # Pre-compute coordinate mappings for efficiency
     dx = (maxx - minx) / width
     dy = (maxy - miny) / height
     x_offset = minx + dx / 2
     y_offset = miny + dy / 2
+
+    # Convert detection radius to grid cells
+    detection_radius_cells_x = int(np.ceil(detection_radius / dx))
+    detection_radius_cells_y = int(np.ceil(detection_radius / dy))
+
+    def get_visible_cells_from_grid_pos(row: int, col: int) -> set[tuple[int, int]]:
+        """Get all grid cells visible from a grid position considering detection radius."""
+        visible_cells = set()
+        world_x = x_offset + col * dx
+        world_y = y_offset + row * dy
+        
+        # Check all cells within the detection radius
+        for r in range(max(0, row - detection_radius_cells_y),
+                      min(height, row + detection_radius_cells_y + 1)):
+            for c in range(max(0, col - detection_radius_cells_x),
+                          min(width, col + detection_radius_cells_x + 1)):
+                
+                # Calculate world coordinates of this cell's center
+                cell_x = x_offset + c * dx
+                cell_y = y_offset + r * dy
+                
+                # Check if within detection radius
+                distance = np.sqrt((cell_x - world_x) ** 2 + (cell_y - world_y) ** 2)
+                if distance <= detection_radius:
+                    visible_cells.add((r, c))
+        
+        return visible_cells
+
+    def calculate_position_score(row: int, col: int, observed_cells: set) -> float:
+        """Calculate the score for a position based on unobserved visible cells."""
+        visible_cells = get_visible_cells_from_grid_pos(row, col)
+        new_cells = visible_cells - observed_cells
+        return sum(probability_map[r, c] for r, c in new_cells)
 
     # Convert the real-world starting coordinates to grid indices
     start_col = np.clip(int((center_x - minx) / dx), 0, width - 1)
@@ -113,8 +152,8 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
     # Pre-compute squared max radius for faster distance checks
     max_radius_sq = max_radius * max_radius
 
-    # Grid-based simulation
-    visited = np.zeros((height, width), dtype=bool)
+    # Track globally observed cells across all drones
+    globally_observed_cells = set()
 
     # Initialize drone positions efficiently
     current_positions = [start_pos]
@@ -130,16 +169,19 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
     paths = [[] for _ in range(num_drones)]
     for i, pos in enumerate(current_positions):
         paths[i].append(pos)
-        visited[pos] = True
+        # Add visible cells from initial positions to globally observed
+        visible_cells = get_visible_cells_from_grid_pos(pos[0], pos[1])
+        globally_observed_cells.update(visible_cells)
 
-    # Pre-define neighbor offsets
+    # Pre-define neighbor offsets (8-connected)
     neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
     max_iterations = height * width // num_drones
-    # Estimate max_iterations based on budget (in meters) and minimum move length (x_offset)
+    
+    # Estimate max_iterations based on budget (in meters) and minimum move length
     budget = kwargs.get('budget')
     if budget is not None and budget > 0:
-        # Each move is at least x_offset meters (cell width)
-        max_iterations = (budget // dx ) // num_drones
+        # Each move is at least dx meters (cell width)
+        max_iterations = (budget // dx) // num_drones
 
     iteration = 0
     while iteration < max_iterations:
@@ -162,24 +204,28 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
                 if dist_sq >= max_radius_sq:
                     continue
 
-                # Allow revisiting cells - add them with 0 probability
-                if visited[nr, nc]:
-                    valid_neighbors.append(((nr, nc), 0))
-                else:
-                    # Store valid neighbor and its probability
-                    prob = probability_map[nr, nc]
-                    valid_neighbors.append(((nr, nc), prob))
+                # Calculate score based on unobserved cells visible from this position
+                score = calculate_position_score(nr, nc, globally_observed_cells)
+                valid_neighbors.append(((nr, nc), score))
 
-            # Choose next position based on probabilities
+            # Choose next position based on scores
             if valid_neighbors:
-                # Select the first neighbor with the maximum probability
-                best_neighbor, _ = max(valid_neighbors, key=lambda x: x[1])
-                next_pos = best_neighbor
+                # Select the neighbor with the maximum score
+                best_neighbor, max_prob = max(valid_neighbors, key=lambda x: x[1])
+                
+                if max_prob <= 0:
+                    # Randomly choose from all valid neighbors when max score is 0 or below
+                    best_neighbor = rng.choice(len(valid_neighbors))
+                    best_neighbor = valid_neighbors[best_neighbor][0]
                 current_positions[i] = best_neighbor
+                
                 paths[i].append(best_neighbor)
-                visited[next_pos] = True
+                
+                # Update globally observed cells with newly visible cells
+                visible_cells = get_visible_cells_from_grid_pos(best_neighbor[0], best_neighbor[1])
+                globally_observed_cells.update(visible_cells)
 
-    # --- Convert grid paths back to real-world coordinate paths ---
+    # Convert grid paths back to real-world coordinate paths
     line_paths = []
     for drone_path_indices in paths:
         if len(drone_path_indices) > 1:
@@ -187,13 +233,13 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
             line_paths.append(LineString([(x_offset + c * dx, y_offset + r * dy) for r, c in drone_path_indices]))
         else:
             line_paths.append(LineString())
-    budget = kwargs.get('budget')
 
-    # # Apply budget constraint if specified - trim excess points
+    # Apply budget constraint if specified - trim excess points
     if budget is not None and budget > 0:
         paths = restrict_path_length(line_paths, budget / num_drones)
     else:
         paths = line_paths
+    
     return paths
 
 def generate_random_walk_path(
@@ -213,7 +259,7 @@ def generate_random_walk_path(
 
 def restrict_path_length(line: LineString, max_length: float) -> LineString:
     if isinstance(line, list):
-        return [restrict_path_length(l, max_length) for l in line]
+        return [restrict_path_length(path, max_length) for path in line]
     if line.is_empty or max_length is None or max_length <= 0 or line.length <= max_length:
         return line
     return substring(line, 0, max_length)
