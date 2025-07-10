@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
     # Example 1: Using default path generators
     evaluator_default = ComparativeDatasetEvaluator(
-        dataset_dirs=DATASET_DIRS, budget=208.78, evaluation_size="medium" # Budget in meters
+        dataset_dirs=DATASET_DIRS, budget=200_000, evaluation_size="medium" # Budget in meters
     )
 
     # # Example 2: Using custom path generators
