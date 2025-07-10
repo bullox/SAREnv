@@ -98,9 +98,8 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
 
     Each drone starts at a specified center coordinate and iteratively moves to the adjacent
     (including diagonal) grid cell with the highest probability value that has not been
-    visited by any drone. The simulation runs until no more moves are possible or budget is exhausted.
+    visited by any drone. The simulation runs until no more moves are possible.
     """
-    budget = kwargs.get('budget')
     height, width = probability_map.shape
     minx, miny, maxx, maxy = bounds
 
@@ -144,27 +143,18 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
 
     # Pre-define neighbor offsets to avoid array creation in loop
     neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
-    max_iterations = height * width * 10  # Increase max iterations to allow full budget usage
-    
-    # Budget tracking: track cumulative distance for each drone
-    budget_per_drone = budget / num_drones if budget is not None else None
-    drone_distances = [0.0] * num_drones  # Track cumulative distance for each drone
-    drone_active = [True] * num_drones  # Track which drones still have budget
+    max_iterations = height * width // num_drones 
+    # Main simulation loop - optimized for speed
 
     iteration = 0
-    while iteration < max_iterations:
+    while  iteration < max_iterations:
+
         iteration += 1
-        any_drone_moved = False
-        
+
         for i in range(num_drones):
-            # Skip drone if it has exhausted its budget
-            if not drone_active[i]:
-                continue
-                
             current_r, current_c = current_positions[i]
             best_neighbor = None
             best_prob = -1
-            fallback_neighbor = None  # For when no unvisited cells remain
 
             # Check all 8 neighbors directly
             for dr, dc in neighbor_offsets:
@@ -181,52 +171,21 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
                 if dist_sq > max_radius_sq:
                     continue
 
-                # Get probability for this cell
-                prob = probability_map[nr, nc]
-                
-                # Prefer unvisited cells with high probability
-                if not visited[nr, nc]:
-                    if prob > best_prob:
-                        best_prob = prob
-                        best_neighbor = (nr, nc)
-                else:
-                    # Keep track of best visited cell as fallback
-                    if fallback_neighbor is None or prob > probability_map[fallback_neighbor[0], fallback_neighbor[1]]:
-                        fallback_neighbor = (nr, nc)
-
-            # If no unvisited neighbors, use the best visited neighbor to continue moving
-            if best_neighbor is None and fallback_neighbor is not None:
-                best_neighbor = fallback_neighbor
-                best_prob = probability_map[fallback_neighbor[0], fallback_neighbor[1]]
-
-            # Move drone if any neighbor found
-            if best_neighbor is not None:
-                # Calculate distance from current position to best neighbor
-                curr_world_x = x_offset + current_c * dx
-                curr_world_y = y_offset + current_r * dy
-                new_world_x = x_offset + best_neighbor[1] * dx
-                new_world_y = y_offset + best_neighbor[0] * dy
-                
-                move_distance = np.sqrt((new_world_x - curr_world_x)**2 + (new_world_y - curr_world_y)**2)
-                
-                # Check if this move would exceed budget
-                if budget_per_drone is not None and drone_distances[i] + move_distance > budget_per_drone:
-                    drone_active[i] = False  # Mark this drone as out of budget
+                # Skip if already visited
+                if visited[nr, nc]:
                     continue
-                
-                # Make the move
+
+                # Check probability
+                prob = probability_map[nr, nc]
+                if prob > best_prob:
+                    best_prob = prob
+                    best_neighbor = (nr, nc)
+
+            # Move drone if valid neighbor found
+            if best_neighbor is not None:
                 current_positions[i] = best_neighbor
                 paths[i].append(best_neighbor)
-                visited[best_neighbor] = True  # Mark as visited for other drones
-                any_drone_moved = True
-                
-                # Update cumulative distance
-                if budget_per_drone is not None:
-                    drone_distances[i] += move_distance
-        
-        # Early termination only if no drones can move (all out of budget or no valid moves)
-        if not any_drone_moved:
-            break
+                visited[best_neighbor] = True
 
     # --- Convert grid paths back to real-world coordinate paths ---
     line_paths = []
@@ -239,7 +198,6 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
             line_paths.append(LineString())
 
     return line_paths
-
 
 def generate_random_walk_path(
     center_x: float,

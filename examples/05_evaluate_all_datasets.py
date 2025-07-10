@@ -58,17 +58,6 @@ if __name__ == "__main__":
     # Example 1: Using default path generators
     evaluator_default = ComparativeDatasetEvaluator(
         dataset_dirs=DATASET_DIRS,
-        # path_generators=None uses defaults
-        num_victims=NUM_VICTIMS,
-        evaluation_size=EVALUATION_SIZE,
-        fov_degrees=FOV_DEGREES,
-        altitude_meters=ALTITUDE_METERS,
-        overlap_ratio=OVERLAP_RATIO,
-        num_drones=NUM_DRONES,
-        path_point_spacing_m=PATH_POINT_SPACING_M,
-        transition_distance_m=TRANSITION_DISTANCE_M,
-        pizza_border_gap_m=PIZZA_BORDER_GAP_M,
-        discount_factor=DISCOUNT_FACTOR
     )
 
     # Example 2: Using custom path generators
@@ -80,17 +69,6 @@ if __name__ == "__main__":
 
     evaluator_custom = ComparativeDatasetEvaluator(
         dataset_dirs=DATASET_DIRS,
-        path_generators=custom_generators,
-        num_victims=NUM_VICTIMS,
-        evaluation_size=EVALUATION_SIZE,
-        fov_degrees=FOV_DEGREES,
-        altitude_meters=ALTITUDE_METERS,
-        overlap_ratio=OVERLAP_RATIO,
-        num_drones=NUM_DRONES,
-        path_point_spacing_m=PATH_POINT_SPACING_M,
-        transition_distance_m=TRANSITION_DISTANCE_M,
-        pizza_border_gap_m=PIZZA_BORDER_GAP_M,
-        discount_factor=DISCOUNT_FACTOR
     )
 
     # Choose which evaluator to use
