@@ -2,6 +2,7 @@
 import concurrent.futures
 import json
 import os
+from pathlib import Path
 
 import elevation
 import geopandas as gpd
@@ -632,6 +633,60 @@ class DataGenerator:
             )
             return None
 
+    def generate_environment_from_polygon(
+        self,
+        polygon: shapely.geometry.Polygon | dict,
+        meter_per_bin: int = 30,
+    ) -> "Environment | None":
+        """
+        Generates a single Environment object from a provided polygon.
+
+        Args:
+            polygon: Either a shapely Polygon object or a GeoJSON-like dict defining the area.
+            meter_per_bin: Resolution of the heatmap in meters per pixel
+
+        Returns:
+            Environment object or None if generation fails
+        """
+        try:
+            # Handle polygon input - convert to shapely if needed
+            if isinstance(polygon, dict):
+                # Assume it's a GeoJSON-like dict
+                if "coordinates" in polygon:
+                    coords = polygon["coordinates"][0] if polygon["coordinates"] else []
+                    geom_polygon = shapely.geometry.Polygon(coords)
+                else:
+                    msg = "Invalid polygon dictionary format"
+                    raise ValueError(msg)
+            elif isinstance(polygon, shapely.geometry.Polygon):
+                geom_polygon = polygon
+            else:
+                msg = "Polygon must be either a shapely Polygon or GeoJSON-like dict"
+                raise ValueError(msg)
+
+            # Get centroid to determine appropriate projected CRS
+            centroid = geom_polygon.centroid
+            center_lon, center_lat = centroid.x, centroid.y
+            projected_crs = get_utm_epsg(center_lon, center_lat)
+
+            log.info(
+                f"Generating environment from polygon with centroid ({center_lon:.4f}, {center_lat:.4f})"
+            )
+
+            return (
+                self._builder.set_polygon(geom_polygon)
+                .set_projected_crs(projected_crs)
+                .set_meter_per_bin(meter_per_bin)
+                .build()
+            )
+
+        except Exception as e:
+            log.error(
+                f"An error occurred during polygon-based environment generation: {e}",
+                exc_info=True
+            )
+            return None
+
     def export_dataset(
         self,
         center_point: tuple[float, float],
@@ -828,3 +883,202 @@ class DataGenerator:
         )
 
         log.info("--- Master dataset export completed. ---")
+
+    def export_dataset_from_polygon(
+        self,
+        polygon: shapely.geometry.Polygon | dict,
+        output_directory: str,
+        environment_type,
+        environment_climate,
+        meter_per_bin: int = 30,
+    ):
+        """
+        Generates and exports a dataset based on a provided polygon.
+
+        Args:
+            polygon: Either a shapely Polygon object or a GeoJSON-like dict defining the area.
+            output_directory: The directory where files will be saved.
+            environment_type: Environment type (e.g., ENVIRONMENT_TYPE_FLAT, ENVIRONMENT_TYPE_MOUNTAINOUS)
+            environment_climate: Climate type (e.g., CLIMATE_TEMPERATE, CLIMATE_DRY)
+            meter_per_bin: The resolution of the heatmap in meters per pixel.
+        """
+        log.info(f"--- Starting polygon-based dataset export to '{output_directory}' ---")
+        Path(output_directory).mkdir(parents=True, exist_ok=True)
+
+        # 1. Generate the environment from the polygon
+        log.info("--- Generating environment from provided polygon ---")
+        master_env = self.generate_environment_from_polygon(polygon, meter_per_bin)
+        if not master_env:
+            log.error("Failed to generate environment from polygon. Aborting export.")
+            return
+
+        # Get polygon centroid for distance calculations
+        if isinstance(polygon, dict):
+            coords = polygon["coordinates"][0] if polygon["coordinates"] else []
+            geom_polygon = shapely.geometry.Polygon(coords)
+        else:
+            geom_polygon = polygon
+        
+        centroid = geom_polygon.centroid
+        center_point = (centroid.x, centroid.y)
+
+        # 2. Combine all features from the environment into one GeoDataFrame
+        master_features_list = []
+        for key, gdf in master_env.features.items():
+            if gdf is not None and not gdf.empty:
+                temp_gdf = gdf[~gdf.geometry.type.isin(["Point"])].copy()
+                temp_gdf["feature_type"] = key
+                master_features_list.append(temp_gdf)
+
+        if not master_features_list:
+            log.error(
+                "No features found in the environment. No features file will be exported."
+            )
+            master_features_gdf = gpd.GeoDataFrame(
+                columns=["geometry", "feature_type", "environment_type", "climate", "center_point", "meter_per_bin", "bounds"],
+                geometry="geometry",
+                crs=master_env.projected_crs,
+            )
+        else:
+            master_features_gdf = pd.concat(master_features_list, ignore_index=True)
+
+        # 3. Generate and export the probability map
+        log.info("--- Generating and exporting probability map ---")
+        feature_heatmap = master_env.get_combined_heatmap()
+
+        if feature_heatmap is None:
+            log.error("Failed to generate feature heatmap. Aborting export.")
+            return
+
+        # Create distance-based log-normal probability map
+        log.info("Generating distance-based log-normal probability map...")
+        mu, sigma = self._lognormal_distribution_estimation(
+            environment_climate, environment_type
+        )
+        h, w = feature_heatmap.shape
+        y_indices, x_indices = np.mgrid[0:h, 0:w]
+
+        # Convert center point to projected coordinates
+        center_lon, center_lat = center_point
+        center_point_gdf = gpd.GeoDataFrame(
+            geometry=[shapely.Point(center_lon, center_lat)], crs="EPSG:4326"
+        )
+        center_point_proj = center_point_gdf.to_crs(master_env.projected_crs)
+        center_x_world = center_point_proj.geometry.x.iloc[0]
+        center_y_world = center_point_proj.geometry.y.iloc[0]
+
+        # Calculate world coordinates for each pixel and then the distance
+        x_coords_world = master_env.xedges[x_indices]
+        y_coords_world = master_env.yedges[y_indices]
+        dist = np.sqrt(
+            (x_coords_world - center_x_world) ** 2
+            + (y_coords_world - center_y_world) ** 2
+        )
+        dist_km = dist / 1000.0
+        dist_km = np.clip(dist_km, 1e-6, None)  # Avoid log(0)
+
+        bell_curve_map = (1 / (dist_km * sigma * np.sqrt(2 * np.pi))) * np.exp(
+            -((np.log(dist_km) - mu) ** 2) / (2 * sigma**2)
+        )
+        # Normalize the spatial map
+        spatial_probability_map = bell_curve_map / bell_curve_map.sum()
+
+        # Normalize the feature-based heatmap
+        feature_heatmap_sum = np.sum(feature_heatmap)
+        if feature_heatmap_sum == 0:
+            log.warning(
+                "Feature heatmap is all zeros. The probability map will be based on log-normal distance only."
+            )
+            feature_prob_map = np.ones_like(feature_heatmap)
+        else:
+            feature_prob_map = feature_heatmap / feature_heatmap_sum
+
+        # Combine maps and normalize
+        log.info("Combining feature and distance maps...")
+        combined_map_unnormalized = spatial_probability_map * feature_prob_map
+        total_sum = np.sum(combined_map_unnormalized)
+        if total_sum > 0:
+            final_probability_map = combined_map_unnormalized / total_sum
+        else:
+            log.warning("Combined map has a sum of zero. Exporting a zero-filled map.")
+            final_probability_map = combined_map_unnormalized  # Remains zeros
+
+        assert (
+            np.isclose(np.sum(final_probability_map), 1.0, atol=1e-6)
+            or np.sum(final_probability_map) == 0
+        )
+
+        # Calculate area-weighted probabilities for features
+        log.info("Calculating area-weighted probabilities for features...")
+        def calculate_distance_probability(geom, center_x, center_y, mu, sigma):
+            """Calculates log-normal probability based on distance to center."""
+            centroid = geom.centroid
+            dist_meters = np.sqrt(
+                (centroid.x - center_x) ** 2 + (centroid.y - center_y) ** 2
+            )
+            dist_km = max(dist_meters / 1000.0, 1e-6)  # Avoid log(0)
+
+            # Apply the log-normal probability density function
+            return (1 / (dist_km * sigma * np.sqrt(2 * np.pi))) * np.exp(
+                -((np.log(dist_km) - mu) ** 2) / (2 * sigma**2)
+            )
+
+        if not master_features_gdf.empty:
+            # Apply the function to get a probability score for each feature's distance
+            distance_prob = master_features_gdf.geometry.apply(
+                calculate_distance_probability,
+                args=(center_x_world, center_y_world, mu, sigma),
+            )
+
+            # Helper function to get the area of influence for features
+            def get_area(geom):
+                if isinstance(geom, shapely.Polygon):
+                    return geom.area
+                if isinstance(geom, LineString):
+                    return geom.buffer(15).area  # Buffer lines to create an area
+                return 0
+
+            # Initial influence is area multiplied by the feature type's base probability
+            master_features_gdf["area"] = master_features_gdf.geometry.apply(get_area)
+            area_influence = master_features_gdf["area"] * master_features_gdf["feature_type"].map(FEATURE_PROBABILITIES)
+            
+            # Combine by multiplying the area influence by the distance probability
+            combined_probability = area_influence * distance_prob
+
+            # Normalize the final combined probability so it all sums to 1
+            total_prob_sum = combined_probability.sum()
+            if total_prob_sum > 0:
+                master_features_gdf["area_probability"] = (
+                    combined_probability / total_prob_sum
+                )
+            else:
+                master_features_gdf["area_probability"] = 0  # Handle case where sum is zero
+
+        # Export the combined features GeoDataFrame with metadata
+        geojson_path = Path(output_directory) / "features.geojson"
+        master_features_gdf.to_crs("EPSG:4326", inplace=True)
+        geojson_dict = master_features_gdf.__geo_interface__
+        
+        # Add metadata to the GeoJSON dictionary
+        geojson_dict["environment_type"] = environment_type
+        geojson_dict["climate"] = environment_climate
+        geojson_dict["center_point"] = center_point
+        geojson_dict["meter_per_bin"] = meter_per_bin
+        geojson_dict["bounds"] = [
+            master_env.minx,
+            master_env.miny,
+            master_env.maxx,
+            master_env.maxy,
+        ]
+
+        with geojson_path.open("w") as f:
+            json.dump(geojson_dict, f)
+        log.info(f"Exported {len(master_features_gdf)} features to {geojson_path}")
+
+        heatmap_path = Path(output_directory) / "heatmap.npy"
+        np.save(heatmap_path, final_probability_map)
+        log.info(
+            f"Exported probability map (shape: {final_probability_map.shape}) to {heatmap_path}"
+        )
+
+        log.info("--- Polygon-based dataset export completed. ---")
