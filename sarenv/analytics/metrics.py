@@ -5,7 +5,8 @@ Provides the PathEvaluator class to score coverage paths against various metrics
 import geopandas as gpd
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
-from shapely.geometry import LineString, MultiLineString
+from shapely.geometry import LineString
+from shapely.ops import unary_union
 
 class PathEvaluator:
     """
@@ -30,6 +31,11 @@ class PathEvaluator:
         self.detection_radius = altitude * np.tan(np.radians(fov_deg / 2))
         self.interpolation_resolution = int(np.ceil(meters_per_bin / 2))
 
+        # Calculate actual heatmap cell size for proper cell_key calculation
+        minx, miny, maxx, maxy = self.extent
+        self.heatmap_cell_size_x = (maxx - minx) / heatmap.shape[1]
+        self.heatmap_cell_size_y = (maxy - miny) / heatmap.shape[0]
+
         minx, miny, maxx, maxy = self.extent
         y_range = np.linspace(miny, maxy, heatmap.shape[0])
         x_range = np.linspace(minx, maxx, heatmap.shape[1])
@@ -37,8 +43,8 @@ class PathEvaluator:
 
     def calculate_all_metrics(self, paths: list[LineString], discount_factor) -> dict:
         """
-        Calculates all metrics for a given list of paths by processing the
-        points along the paths only once.
+        Calculates all metrics for a given list of paths by collecting all points
+        first and then calculating unique likelihood scores.
 
         Args:
             paths (list[LineString]): A list of Shapely LineString objects representing the drone paths.
@@ -55,19 +61,22 @@ class PathEvaluator:
                   - 'cumulative_likelihoods' (list of arrays)
                   - 'cumulative_time_discounted_scores' (list of arrays)
         """
-        total_likelihood = 0
-        total_time_discounted_score = 0
-        
-        # Lists to store cumulative results for each path
-        cumulative_distances_all_paths = []
-        cumulative_likelihoods_all_paths = []
-        cumulative_discounted_scores_all_paths = []
+        # First pass: collect all points from all paths with their metadata
+        all_points_data = []
+        path_metadata = []
+        global_time_offset = 0
 
-        for path in paths:
+
+        for path_idx, path in enumerate(paths):
             if path.is_empty or path.length == 0:
-                cumulative_distances_all_paths.append(np.array([0]))
-                cumulative_likelihoods_all_paths.append(np.array([0]))
-                cumulative_discounted_scores_all_paths.append(np.array([0]))
+                path_metadata.append({
+                    'path_idx': path_idx,
+                    'distances': np.array([0]),
+                    'point_coords': [],
+                    'global_distances': np.array([0]),
+                    'start_idx': len(all_points_data),
+                    'end_idx': len(all_points_data)
+                })
                 continue
 
             num_points = int(np.ceil(path.length / self.interpolation_resolution)) + 1
@@ -75,28 +84,132 @@ class PathEvaluator:
             points = [path.interpolate(d) for d in distances]
             point_coords = [(p.y, p.x) for p in points]
 
-            likelihoods = self.interpolator(point_coords)
-            total_likelihood += np.sum(likelihoods)
+            # Global distances for time-discounted scores
+            global_distances = distances + global_time_offset
 
-            discounts = discount_factor ** distances
-            discounted_likelihoods = likelihoods * discounts
-            total_time_discounted_score += np.sum(discounted_likelihoods)
+            # Store metadata for this path
+            path_metadata.append({
+                'path_idx': path_idx,
+                'distances': distances,
+                'point_coords': point_coords,
+                'global_distances': global_distances,
+                'start_idx': len(all_points_data),
+                'end_idx': len(all_points_data) + len(point_coords)
+            })
 
-            cumulative_distances_all_paths.append(distances)
-            cumulative_likelihoods_all_paths.append(np.cumsum(likelihoods))
-            cumulative_discounted_scores_all_paths.append(np.cumsum(discounted_likelihoods))
+            # Add points to global collection with their metadata
+            for i, (y, x) in enumerate(point_coords):
+                # Use heatmap grid for cell_key calculation to avoid double-counting
+                minx, miny, _, _ = self.extent
+                heatmap_row = int((y - miny) / self.heatmap_cell_size_y)
+                heatmap_col = int((x - minx) / self.heatmap_cell_size_x)
 
-        # --- Geospatial Metrics (handled separately for efficiency) ---
-        victim_metrics = self._calculate_victims_found_score(paths)
-        area_covered = self._calculate_area_covered(paths)
+                # Ensure bounds safety
+                heatmap_row = max(0, min(heatmap_row, self.heatmap.shape[0] - 1))
+                heatmap_col = max(0, min(heatmap_col, self.heatmap.shape[1] - 1))
+
+                cell_key = (heatmap_row, heatmap_col)
+                all_points_data.append({
+                    'coords': (y, x),
+                    'cell_key': cell_key,
+                    'path_idx': path_idx,
+                    'point_idx': i,
+                    'global_distance': global_distances[i]
+                })
+
+            global_time_offset += path.length
+
+        # Second pass: calculate likelihoods for all unique points
+        if all_points_data:
+            # Get all unique cell keys and their first occurrence
+            unique_cells = {}
+            for i, point_data in enumerate(all_points_data):
+                cell_key = point_data['cell_key']
+                if cell_key not in unique_cells:
+                    unique_cells[cell_key] = {
+                        'coords': point_data['coords'],
+                        'first_occurrence_idx': i
+                    }
+
+            # Calculate likelihoods for unique cells only
+            unique_coords = [data['coords'] for data in unique_cells.values()]
+            unique_likelihoods = self.interpolator(unique_coords)
+
+            # Create mapping from cell_key to likelihood
+            cell_likelihood_map = {}
+            for i, cell_key in enumerate(unique_cells.keys()):
+                cell_likelihood_map[cell_key] = unique_likelihoods[i]
+
+            # Calculate total likelihood (sum of all unique cells)
+            total_likelihood = np.sum(unique_likelihoods)
+
+            # Calculate time-discounted score for all points (including duplicates)
+            total_time_discounted_score = 0
+            for point_data in all_points_data:
+                likelihood = cell_likelihood_map[point_data['cell_key']]
+                discount = discount_factor ** point_data['global_distance']
+                total_time_discounted_score += likelihood * discount
+        else:
+            total_likelihood = 0
+            total_time_discounted_score = 0
+
+        # Third pass: generate cumulative results for each path
+        # Track globally visited cells to avoid double-counting in cumulative metrics
+        globally_visited_cells = set()
+        cumulative_distances_all_paths = []
+        cumulative_likelihoods_all_paths = []
+        cumulative_discounted_scores_all_paths = []
+
+        for meta in path_metadata:
+            if not meta['point_coords']:
+                cumulative_distances_all_paths.append(np.array([0]))
+                cumulative_likelihoods_all_paths.append(np.array([0]))
+                cumulative_discounted_scores_all_paths.append(np.array([0]))
+                continue
+
+            # Get likelihoods for this path's points, only counting new cells
+            path_likelihoods = []
+            path_discounted_likelihoods = []
+
+            for i, (y, x) in enumerate(meta['point_coords']):
+                # Use same heatmap grid calculation as above
+                minx, miny, _, _ = self.extent
+                heatmap_row = int((y - miny) / self.heatmap_cell_size_y)
+                heatmap_col = int((x - minx) / self.heatmap_cell_size_x)
+
+                # Ensure bounds safety
+                heatmap_row = max(0, min(heatmap_row, self.heatmap.shape[0] - 1))
+                heatmap_col = max(0, min(heatmap_col, self.heatmap.shape[1] - 1))
+
+                cell_key = (heatmap_row, heatmap_col)
+
+                # Only count likelihood if this cell hasn't been visited by previous paths
+                if cell_key not in globally_visited_cells:
+                    likelihood = cell_likelihood_map[cell_key]
+                    globally_visited_cells.add(cell_key)
+                else:
+                    likelihood = 0.0  # Already counted by a previous path
+
+                discount = discount_factor ** meta['distances'][i]
+
+                path_likelihoods.append(likelihood)
+                path_discounted_likelihoods.append(likelihood * discount)
+
+            cumulative_distances_all_paths.append(meta['distances'])
+            cumulative_likelihoods_all_paths.append(np.cumsum(path_likelihoods))
+            cumulative_discounted_scores_all_paths.append(np.cumsum(path_discounted_likelihoods))
+
+        # # --- Geospatial Metrics (handled separately for efficiency) ---
+        # victim_metrics = self._calculate_victims_found_score(paths)
+        # area_covered = self._calculate_area_covered(paths)
         total_path_length = self._calculate_total_path_length(paths)
 
         # 4. Assemble the final results dictionary
         return {
             'total_likelihood_score': total_likelihood,
             'total_time_discounted_score': total_time_discounted_score,
-            'victim_detection_metrics': victim_metrics,
-            'area_covered': area_covered,
+            'victim_detection_metrics': {'percentage_found': 0, 'found_victim_indices': []},
+            'area_covered': 0,
             'total_path_length': total_path_length,
             'cumulative_distances': cumulative_distances_all_paths,
             'cumulative_likelihoods': cumulative_likelihoods_all_paths,
@@ -113,12 +226,15 @@ class PathEvaluator:
         if not valid_paths or self.victims.empty:
             return {'percentage_found': 0, 'found_victim_indices': []}
 
-        # Use MultiLineString for potentially faster buffering and unioning
-        path_collection = MultiLineString(valid_paths)
-        coverage_area = path_collection.buffer(self.detection_radius)
+        # Memory-efficient approach: use unary_union to avoid intermediate geometry accumulation
+        buffered_paths = [p.buffer(self.detection_radius) for p in valid_paths]
+        coverage_area = unary_union(buffered_paths)
+
+        # Clear the buffered_paths list to free memory
+        del buffered_paths
 
         found_victims = self.victims[self.victims.within(coverage_area)]
-        
+
         percentage_found = (len(found_victims) / len(self.victims)) * 100 if not self.victims.empty else 0
 
         return {
@@ -142,15 +258,12 @@ class PathEvaluator:
         if not valid_paths:
             return 0.0
 
-        # Buffer each path individually and then union them to avoid double-counting overlaps
+        # Memory-efficient approach: use unary_union to avoid intermediate geometry accumulation
         buffered_paths = [path.buffer(self.detection_radius) for path in valid_paths]
-        
-        # Start with the first buffered path
-        combined_coverage = buffered_paths[0]
-        
-        # Union with all other buffered paths to handle overlaps
-        for buffered_path in buffered_paths[1:]:
-            combined_coverage = combined_coverage.union(buffered_path)
+        combined_coverage = unary_union(buffered_paths)
+
+        # Clear the buffered_paths list to free memory
+        del buffered_paths
 
         return combined_coverage.area / 1_000_000  # Convert from m² to km²
 

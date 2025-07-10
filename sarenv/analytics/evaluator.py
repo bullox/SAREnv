@@ -1,11 +1,17 @@
 # toolkit.py
-import os
+from __future__ import annotations
+
+from pathlib import Path
+
+import geopandas as gpd
 import numpy as np
 import pandas as pd
-import geopandas as gpd
+from shapely.geometry import Point, LineString
+
 import sarenv
 from sarenv.analytics import paths, metrics
 from sarenv.utils import geo
+from sarenv.utils.logging_setup import get_logger
 from sarenv.utils.plot import (
     plot_aggregate_bars,
     plot_combined_normalized_bars,
@@ -13,12 +19,8 @@ from sarenv.utils.plot import (
     plot_combined_time_series_with_ci,
     plot_single_evaluation_results
 )
-from shapely.geometry import Point
-from sarenv.utils.logging_setup import get_logger
-
 
 log = get_logger()
-
 
 class PathGeneratorConfig:
     """
@@ -29,7 +31,7 @@ class PathGeneratorConfig:
     def __init__(self, **kwargs):
         """
         Initialize path generation configuration.
-        
+
         Args:
             **kwargs: Keyword arguments for path generation parameters.
                 num_drones (int): Number of drones to simulate. Defaults to 3.
@@ -43,7 +45,7 @@ class PathGeneratorConfig:
         self.num_drones = kwargs.pop('num_drones', 3)
         self.fov_degrees = kwargs.pop('fov_degrees', 45.0)
         self.altitude_meters = kwargs.pop('altitude_meters', 80.0)
-        self.overlap_ratio = kwargs.pop('overlap_ratio', 0.25)
+        self.overlap_ratio = kwargs.pop('overlap_ratio', 0.1)
         self.path_point_spacing_m = kwargs.pop('path_point_spacing_m', 10.0)
         self.transition_distance_m = kwargs.pop('transition_distance_m', 50.0)
         self.pizza_border_gap_m = kwargs.pop('pizza_border_gap_m', 15.0)
@@ -51,19 +53,26 @@ class PathGeneratorConfig:
         # Store any additional parameters not explicitly defined
         self.additional_params = kwargs
 
-    def get_params_dict(self, center_x: float, center_y: float, max_radius: float,
-                       probability_map: np.ndarray, bounds: tuple, budget: float = None) -> dict:
+    def get_params_dict(
+        self,
+        center_x: float,
+        center_y: float,
+        max_radius: float,
+        probability_map: np.ndarray | None,
+        bounds: tuple[float, float, float, float] | None,
+        budget: float | None = None
+    ) -> dict[str, float | int | np.ndarray | tuple | None]:
         """
         Generate a complete parameter dictionary for path generation.
-        
+
         Args:
             center_x: X coordinate of the center point
             center_y: Y coordinate of the center point
             max_radius: Maximum search radius
-            probability_map: 2D probability map
-            bounds: Geographic bounds tuple
+            probability_map: Optional probability map for informed search
+            bounds: Optional geographic bounds tuple
             budget: Optional budget constraint
-            
+
         Returns:
             Dictionary with all parameters needed for path generation
         """
@@ -90,16 +99,16 @@ class PathGeneratorConfig:
 
         return params
 
-
 class PathGenerator:
     """
     Wrapper class for path generation functions that provides a consistent interface.
+    Uses PathGeneratorConfig to ensure consistent parameter handling.
     """
 
-    def __init__(self, name: str, func, description: str = ""):
+    def __init__(self, name: str, func, path_generator_config: PathGeneratorConfig, description: str = ""):
         """
         Initialize a path generator.
-        
+
         Args:
             name: Name of the generator
             func: Function that generates paths
@@ -108,40 +117,49 @@ class PathGenerator:
         self.name = name
         self.func = func
         self.description = description
+        self.path_generator_config = path_generator_config
 
-    def generate(self, config: PathGeneratorConfig, center_x: float, center_y: float,
-                max_radius: float, probability_map: np.ndarray, bounds: tuple,
-                budget: float = None):
+    def __call__(
+        self,
+        center_x: float,
+        center_y: float,
+        max_radius: float,
+        probability_map: np.ndarray | None = None,
+        bounds: tuple[float, float, float, float] | None = None,
+    ) -> list[LineString]:
         """
-        Generate paths using the configured function.
-        
+        Call the generator function with properly configured parameters.
+
         Args:
-            config: PathGeneratorConfig with all parameters
-            center_x: X coordinate of center point
-            center_y: Y coordinate of center point
-            max_radius: Maximum search radius
-            probability_map: 2D probability map
-            bounds: Geographic bounds tuple
-            budget: Optional budget constraint
-            
+            center_x: X coordinate of the center point
+            center_y: Y coordinate of the center point
+            max_radius: Maximum radius for the search area
+            probability_map: Optional probability map for informed search
+            bounds: Optional geographic bounds tuple
+            budget: Optional budget constraint in meters
+
         Returns:
-            List of LineString paths
+            List of LineString objects representing paths for each drone
         """
-        params = config.get_params_dict(center_x, center_y, max_radius,
-                                       probability_map, bounds, budget)
+        # Get all parameters from the config
+        params = self.path_generator_config.get_params_dict(
+            center_x=center_x,
+            center_y=center_y,
+            max_radius=max_radius,
+            probability_map=probability_map,
+            bounds=bounds,
+        )
+
+        # All parameters must be passed to ensure consistent behavior
         return self.func(**params)
 
-    def __call__(self, *args, **kwargs):
-        """Allow the generator to be called directly."""
-        return self.func(*args, **kwargs)
 
-
-def get_default_path_generators(config: PathGeneratorConfig) -> dict:
+def get_default_path_generators(config: PathGeneratorConfig) -> dict[str, PathGenerator]:
     """
     Get default path generators with consistent parameter handling.
     
     Args:
-        config: PathGeneratorConfig with default parameters
+        config: Configuration object containing default parameters for path generation
         
     Returns:
         Dictionary of PathGenerator instances
@@ -150,27 +168,33 @@ def get_default_path_generators(config: PathGeneratorConfig) -> dict:
         "RandomWalk": PathGenerator(
             name="RandomWalk",
             func=paths.generate_random_walk_path,
+            path_generator_config=config,
             description="Random walk path generation"
         ),
         "Greedy": PathGenerator(
             name="Greedy",
             func=paths.generate_greedy_path,
+            path_generator_config=config,
             description="Greedy path generation based on probability map"
         ),
         "Spiral": PathGenerator(
             name="Spiral",
             func=paths.generate_spiral_path,
+            path_generator_config=config,
             description="Spiral path generation"
         ),
         "Concentric": PathGenerator(
             name="Concentric",
             func=paths.generate_concentric_circles_path,
+            path_generator_config=config,
             description="Concentric circles path generation"
         ),
         "Pizza": PathGenerator(
             name="Pizza",
             func=paths.generate_pizza_zigzag_path,
+            path_generator_config=config,
             description="Pizza slice zigzag path generation"
+            
         )
     }
 
@@ -201,19 +225,19 @@ class ComparativeDatasetEvaluator:
                 pizza_border_gap_m (float): Border gap for pizza patterns. Defaults to 15.0.\\
         """
         self.dataset_dirs = dataset_dirs
-        
+
         # Extract evaluation-specific parameters from kwargs
         path_generators = kwargs.get("path_generators")
         self.num_victims = kwargs.get("num_victims", 100)
         self.evaluation_size = kwargs.get("evaluation_size", "medium")
         self.discount_factor = kwargs.get("discount_factor", 0.999)
-        
+
         # Create path generator configuration from all kwargs
-        self.path_config = PathGeneratorConfig(**kwargs)
+        self.path_generator_config = PathGeneratorConfig(**kwargs)
         self.dataset_dirs = dataset_dirs
         # Set up path generators
         if path_generators is None:
-            self.path_generators = get_default_path_generators(self.path_config)
+            self.path_generators = get_default_path_generators(self.path_generator_config)
         else:
             self.path_generators = {}
             for name, generator in path_generators.items():
@@ -221,7 +245,12 @@ class ComparativeDatasetEvaluator:
                     self.path_generators[name] = generator
                 else:
                     # Assume it's a function and wrap it
-                    self.path_generators[name] = PathGenerator(name, generator)
+                    self.path_generators[name] = PathGenerator(
+                        name=name,
+                        func=generator,
+                        path_generator_config=self.path_generator_config,
+                        description=f"Custom generator: {name}"
+                    )
 
         # Storage for summary and time-series results
         self.summary_results = []
@@ -240,10 +269,10 @@ class ComparativeDatasetEvaluator:
                 dataset_directory=dataset_dir,
                 evaluation_sizes=[self.evaluation_size],
                 num_lost_persons=self.num_victims,
-                path_config=self.path_config,
+                path_generator_config=self.path_generator_config,
                 path_generators=self.path_generators,
                 # Pass num_drones from the config explicitly
-                num_drones=self.path_config.num_drones
+                num_drones=self.path_generator_config.num_drones
             )
             self.evaluators.append(evaluator)
 
@@ -259,7 +288,7 @@ class ComparativeDatasetEvaluator:
             for _, row in results_df.iterrows():
                 self.summary_results.append({
                     "Algorithm": row["Algorithm"],
-                    "Dataset": os.path.basename(dataset_dir),
+                    "Dataset": Path(dataset_dir).name,
                     "Likelihood Score": row["Likelihood Score"],
                     "Time-Discounted Score": row["Time-Discounted Score"],
                     "Victims Found (%)": row["Victims Found (%)"],
@@ -275,18 +304,18 @@ class ComparativeDatasetEvaluator:
                 # Add the time-series data from this evaluator
                 self.time_series_results[algorithm_name].extend(time_series_list)
 
-    def get_results_per_dataset(self):
+    def get_results_per_dataset(self) -> pd.DataFrame:
         """
         Returns the results as a DataFrame grouped by dataset.
         """
         return pd.DataFrame(self.summary_results).groupby("Dataset").apply(lambda x: x.reset_index(drop=True))
 
-    def summarize_results(self):
+    def summarize_results(self) -> pd.DataFrame:
         """
         Returns a summary DataFrame grouped by algorithm with means and 95% confidence intervals.
         """
-        df = pd.DataFrame(self.summary_results)
-        self.summary = df.groupby("Algorithm").agg(
+        results_df = pd.DataFrame(self.summary_results)
+        self.summary = results_df.groupby("Algorithm").agg(
             Mean_Likelihood_Score=('Likelihood Score', 'mean'),
             CI_Likelihood_Score=('Likelihood Score', lambda x: 1.96 * x.sem()),
             Mean_Time_Discounted=('Time-Discounted Score', 'mean'),
@@ -351,7 +380,7 @@ class ComparativeEvaluator:
                 evaluation_sizes (list): List of dataset sizes to evaluate. Defaults to ["small", "medium", "large", "xlarge"].
                 num_drones (int): The number of drones to simulate. Defaults to 3.
                 num_lost_persons (int): Number of victim locations to generate. Defaults to 100.
-                path_config (PathGeneratorConfig): Configuration for path parameters.
+                path_generator_config (PathGeneratorConfig): Configuration for path parameters.
                 path_generators (dict): Dict of {name: PathGenerator} instances.
                 use_defaults (bool): Whether to use default path generators if none are provided. Defaults to True.
         """
@@ -363,8 +392,8 @@ class ComparativeEvaluator:
             # "xlarge",
         ]
         self.num_victims = kwargs.get("num_lost_persons", 100)
-        self.path_config:PathGeneratorConfig = kwargs.get("path_config")
-        self.num_drones = self.path_config.num_drones if self.path_config else kwargs.get("num_drones", 3)
+        self.path_generator_config:PathGeneratorConfig = kwargs.get("path_generator_config")
+        self.num_drones = self.path_generator_config.num_drones if self.path_generator_config else kwargs.get("num_drones", 3)
         self.path_generators = kwargs.get("path_generators")
         use_defaults = kwargs.get("use_defaults", True)
 
@@ -374,21 +403,17 @@ class ComparativeEvaluator:
         self.time_series_data = {}
 
         # Create path config if not provided
-        if self.path_config is None:
-            self.path_config = PathGeneratorConfig(num_drones=self.num_drones)
-
-        # Static budgets for each environment size (in meters)
-        self.budget_by_size = {
-            "small": 5000.0,    # 5 km
-            "medium": 400_000.0, # 200 km
-            "large": 600_000.0,  # 200 km
-            "xlarge": 1_000_000.0, # 500 km
-        }
+        if self.path_generator_config is None:
+            self.path_generator_config = PathGeneratorConfig(num_drones=self.num_drones)
 
         # Set up path generators, defaulting if none are provided
         if self.path_generators is None:
             if use_defaults:
-                self.path_generators = get_default_path_generators(self.path_config)
+                if self.path_generator_config:
+                    self.path_generators = get_default_path_generators(self.path_generator_config)
+                else:
+                    config = PathGeneratorConfig(num_drones=self.num_drones)
+                    self.path_generators = get_default_path_generators(config)
             else:
                 self.path_generators = {}
 
@@ -455,8 +480,8 @@ class ComparativeEvaluator:
                 item.heatmap,
                 item.bounds,
                 victims_gdf,
-                self.path_config.fov_degrees,
-                self.path_config.altitude_meters,
+                self.path_generator_config.fov_degrees,
+                self.path_generator_config.altitude_meters,
                 self.loader._meter_per_bin
             )
             center_proj = (
@@ -465,20 +490,15 @@ class ComparativeEvaluator:
                 .geometry.iloc[0]
             )
 
-            current_budget = self.budget_by_size.get(size, 10000.0)
-
             for name, generator in self.path_generators.items():
                 log.info(f"Running {name} algorithm on '{size}' dataset...")
-
-                # Use the new PathGenerator interface
-                generated_paths = generator.generate(
-                    self.path_config,
+                generator : PathGenerator
+                generated_paths = generator(
                     center_proj.x,
                     center_proj.y,
                     item.radius_km * 1000,
                     item.heatmap,
                     item.bounds,
-                    current_budget
                 )
 
                 all_metrics = evaluator.calculate_all_metrics(
