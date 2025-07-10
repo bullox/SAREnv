@@ -187,7 +187,7 @@ def run_edouard_polygon_example():
         output_directory=output_dir,
         environment_climate=CLIMATE_TEMPERATE,
         environment_type=ENVIRONMENT_TYPE_FLAT,
-        meter_per_bin=10,  # Higher resolution for better 3D visualization
+        meter_per_bin=1,  # Higher resolution for better 3D visualization
     )
 
     # 4. Load the generated dataset
