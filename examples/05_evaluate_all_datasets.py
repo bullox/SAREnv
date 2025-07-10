@@ -21,7 +21,7 @@ PATH_POINT_SPACING_M = 10.0
 TRANSITION_DISTANCE_M = 50.0
 PIZZA_BORDER_GAP_M = 15.0
 DISCOUNT_FACTOR = 0.999
-DATASET_DIRS = [f"sarenv_dataset/{i}" for i in range(1, 2)]
+DATASET_DIRS = [f"sarenv_dataset/{i}" for i in range(1,5)]
 
 
 def create_custom_path_generator():
@@ -57,19 +57,19 @@ if __name__ == "__main__":
 
     # Example 1: Using default path generators
     evaluator_default = ComparativeDatasetEvaluator(
-        dataset_dirs=DATASET_DIRS,
+        dataset_dirs=DATASET_DIRS, budget=208.78, evaluation_size="medium" # Budget in meters
     )
 
-    # Example 2: Using custom path generators
-    custom_generators = {
-        "Spiral": PathGenerator("Spiral", paths.generate_spiral_path),
-        "CustomLine": create_custom_path_generator(),
-        "Greedy": PathGenerator("Greedy", paths.generate_greedy_path),
-    }
+    # # Example 2: Using custom path generators
+    # custom_generators = {
+    #     "Spiral": PathGenerator("Spiral", paths.generate_spiral_path),
+    #     "CustomLine": create_custom_path_generator(),
+    #     "Greedy": PathGenerator("Greedy", paths.generate_greedy_path),
+    # }
 
-    evaluator_custom = ComparativeDatasetEvaluator(
-        dataset_dirs=DATASET_DIRS,
-    )
+    # evaluator_custom = ComparativeDatasetEvaluator(
+    #     dataset_dirs=DATASET_DIRS,
+    # )
 
     # Choose which evaluator to use
     evaluator = evaluator_default  # Switch to evaluator_custom to test custom generators

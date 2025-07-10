@@ -7,8 +7,8 @@ import sarenv
 from sarenv.analytics import paths, metrics
 from sarenv.utils import geo
 from sarenv.utils.plot import (
-    plot_aggregate_bars, 
-    plot_combined_normalized_bars, 
+    plot_aggregate_bars,
+    plot_combined_normalized_bars,
     plot_time_series_with_ci,
     plot_combined_time_series_with_ci,
     plot_single_evaluation_results
@@ -25,41 +25,33 @@ class PathGeneratorConfig:
     Configuration class for path generation parameters.
     Provides a clean interface for managing path generation parameters.
     """
-    
-    def __init__(self, 
-                 num_drones: int = 3,
-                 fov_degrees: float = 45.0,
-                 altitude_meters: float = 80.0,
-                 overlap_ratio: float = 0.25,
-                 path_point_spacing_m: float = 10.0,
-                 transition_distance_m: float = 50.0,
-                 pizza_border_gap_m: float = 15.0,
-                 **kwargs):
+
+    def __init__(self, **kwargs):
         """
         Initialize path generation configuration.
         
         Args:
-            num_drones: Number of drones to simulate
-            fov_degrees: Field of view in degrees
-            altitude_meters: Altitude in meters
-            overlap_ratio: Overlap ratio for systematic patterns
-            path_point_spacing_m: Spacing between path points in meters
-            transition_distance_m: Transition distance for concentric patterns
-            pizza_border_gap_m: Border gap for pizza patterns
-            **kwargs: Additional parameters for custom generators
+            **kwargs: Keyword arguments for path generation parameters.
+                num_drones (int): Number of drones to simulate. Defaults to 3.
+                fov_degrees (float): Field of view in degrees. Defaults to 45.0.
+                altitude_meters (float): Altitude in meters. Defaults to 80.0.
+                overlap_ratio (float): Overlap ratio for systematic patterns. Defaults to 0.25.
+                path_point_spacing_m (float): Spacing between path points in meters. Defaults to 10.0.
+                transition_distance_m (float): Transition distance for concentric patterns. Defaults to 50.0.
+                pizza_border_gap_m (float): Border gap for pizza patterns. Defaults to 15.0.
         """
-        self.num_drones = num_drones
-        self.fov_degrees = fov_degrees
-        self.altitude_meters = altitude_meters
-        self.overlap_ratio = overlap_ratio
-        self.path_point_spacing_m = path_point_spacing_m
-        self.transition_distance_m = transition_distance_m
-        self.pizza_border_gap_m = pizza_border_gap_m
-        
-        # Store additional parameters
+        self.num_drones = kwargs.pop('num_drones', 3)
+        self.fov_degrees = kwargs.pop('fov_degrees', 45.0)
+        self.altitude_meters = kwargs.pop('altitude_meters', 80.0)
+        self.overlap_ratio = kwargs.pop('overlap_ratio', 0.25)
+        self.path_point_spacing_m = kwargs.pop('path_point_spacing_m', 10.0)
+        self.transition_distance_m = kwargs.pop('transition_distance_m', 50.0)
+        self.pizza_border_gap_m = kwargs.pop('pizza_border_gap_m', 15.0)
+
+        # Store any additional parameters not explicitly defined
         self.additional_params = kwargs
-    
-    def get_params_dict(self, center_x: float, center_y: float, max_radius: float, 
+
+    def get_params_dict(self, center_x: float, center_y: float, max_radius: float,
                        probability_map: np.ndarray, bounds: tuple, budget: float = None) -> dict:
         """
         Generate a complete parameter dictionary for path generation.
@@ -89,13 +81,13 @@ class PathGeneratorConfig:
             'transition_distance_m': self.transition_distance_m,
             'border_gap_m': self.pizza_border_gap_m,
         }
-        
+
         if budget is not None:
             params['budget'] = budget
-            
+
         # Add any additional parameters
         params.update(self.additional_params)
-        
+
         return params
 
 
@@ -103,7 +95,7 @@ class PathGenerator:
     """
     Wrapper class for path generation functions that provides a consistent interface.
     """
-    
+
     def __init__(self, name: str, func, description: str = ""):
         """
         Initialize a path generator.
@@ -116,9 +108,9 @@ class PathGenerator:
         self.name = name
         self.func = func
         self.description = description
-        
-    def generate(self, config: PathGeneratorConfig, center_x: float, center_y: float, 
-                max_radius: float, probability_map: np.ndarray, bounds: tuple, 
+
+    def generate(self, config: PathGeneratorConfig, center_x: float, center_y: float,
+                max_radius: float, probability_map: np.ndarray, bounds: tuple,
                 budget: float = None):
         """
         Generate paths using the configured function.
@@ -135,10 +127,10 @@ class PathGenerator:
         Returns:
             List of LineString paths
         """
-        params = config.get_params_dict(center_x, center_y, max_radius, 
+        params = config.get_params_dict(center_x, center_y, max_radius,
                                        probability_map, bounds, budget)
         return self.func(**params)
-    
+
     def __call__(self, *args, **kwargs):
         """Allow the generator to be called directly."""
         return self.func(*args, **kwargs)
@@ -188,37 +180,37 @@ class ComparativeDatasetEvaluator:
     Evaluates multiple datasets using ComparativeEvaluator to minimize code duplication.
     Provides time-series plotting and confidence interval analysis.
     """
-    
-    def __init__(
-        self,
-        dataset_dirs,
-        path_generators=None,  # Can be dict of PathGenerator instances or functions
-        num_victims=100,
-        evaluation_size="medium",
-        fov_degrees=45.0,
-        altitude_meters=80.0,
-        overlap_ratio=0.25,
-        num_drones=3,
-        path_point_spacing_m=10.0,
-        transition_distance_m=50.0,
-        pizza_border_gap_m=15.0,
-        discount_factor=0.999,
-        **additional_params
-    ):
+
+    def __init__(self, dataset_dirs, **kwargs):
+        """
+        Initializes the ComparativeDatasetEvaluator.
+
+        Args:
+            dataset_dirs (list): A list of directories for the datasets to be evaluated. \\
+            **kwargs: Keyword arguments for evaluation and path generation. \\
+                path_generators (dict): Dict of {name: PathGenerator} instances. \\
+                num_victims (int): Number of victim locations per dataset. Defaults to 100. \\
+                evaluation_size (str): Dataset size to evaluate. Defaults to "medium". \\
+                discount_factor (float): Discount factor for time-based scores. Defaults to 0.999. \\
+                num_drones (int): Number of drones to simulate. Defaults to 3.\\
+                fov_degrees (float): Camera field of view in degrees. Defaults to 45.0.\\
+                altitude_meters (float): Drone altitude in meters. Defaults to 80.0.\\
+                overlap_ratio (float): Overlap ratio for patterns. Defaults to 0.25.\\
+                path_point_spacing_m (float): Spacing between path points. Defaults to 10.0.\\
+                transition_distance_m (float): Transition distance for concentric patterns. Defaults to 50.0.\\
+                pizza_border_gap_m (float): Border gap for pizza patterns. Defaults to 15.0.\\
+        """
         self.dataset_dirs = dataset_dirs
         
-        # Create path generator configuration
-        self.path_config = PathGeneratorConfig(
-            num_drones=num_drones,
-            fov_degrees=fov_degrees,
-            altitude_meters=altitude_meters,
-            overlap_ratio=overlap_ratio,
-            path_point_spacing_m=path_point_spacing_m,
-            transition_distance_m=transition_distance_m,
-            pizza_border_gap_m=pizza_border_gap_m,
-            **additional_params
-        )
+        # Extract evaluation-specific parameters from kwargs
+        path_generators = kwargs.get("path_generators")
+        self.num_victims = kwargs.get("num_victims", 100)
+        self.evaluation_size = kwargs.get("evaluation_size", "medium")
+        self.discount_factor = kwargs.get("discount_factor", 0.999)
         
+        # Create path generator configuration from all kwargs
+        self.path_config = PathGeneratorConfig(**kwargs)
+        self.dataset_dirs = dataset_dirs
         # Set up path generators
         if path_generators is None:
             self.path_generators = get_default_path_generators(self.path_config)
@@ -230,23 +222,6 @@ class ComparativeDatasetEvaluator:
                 else:
                     # Assume it's a function and wrap it
                     self.path_generators[name] = PathGenerator(name, generator)
-        
-        self.num_victims = num_victims
-        self.evaluation_size = evaluation_size
-        self.discount_factor = discount_factor
-
-        # Create a ComparativeEvaluator for each dataset
-        self.evaluators = []
-        for dataset_dir in dataset_dirs:
-            evaluator = ComparativeEvaluator(
-                dataset_directory=dataset_dir,
-                evaluation_sizes=[evaluation_size],
-                num_drones=num_drones,
-                num_lost_persons=num_victims,
-                path_config=self.path_config,
-                path_generators=self.path_generators
-            )
-            self.evaluators.append(evaluator)
 
         # Storage for summary and time-series results
         self.summary_results = []
@@ -257,16 +232,29 @@ class ComparativeDatasetEvaluator:
         Evaluates all path generators across all datasets using ComparativeEvaluator instances.
         Now only uses data generated by ComparativeEvaluator - no direct path evaluation.
         """
-        for i, evaluator in enumerate(self.evaluators):
-            dataset_dir = self.dataset_dirs[i]
+        # Create a ComparativeEvaluator for each dataset
+        self.evaluators = []
+        for dataset_dir in self.dataset_dirs:
+            # Pass necessary parameters to ComparativeEvaluator
+            evaluator = ComparativeEvaluator(
+                dataset_directory=dataset_dir,
+                evaluation_sizes=[self.evaluation_size],
+                num_lost_persons=self.num_victims,
+                path_config=self.path_config,
+                path_generators=self.path_generators,
+                # Pass num_drones from the config explicitly
+                num_drones=self.path_config.num_drones
+            )
+            self.evaluators.append(evaluator)
+
             log.info(f"Evaluating dataset: {dataset_dir}")
-            
+
             # Run evaluation for this dataset
             results_df = evaluator.run_baseline_evaluations()
-            
+
             if results_df.empty:
                 continue
-                
+
             # Store summary results from ComparativeEvaluator
             for _, row in results_df.iterrows():
                 self.summary_results.append({
@@ -278,12 +266,12 @@ class ComparativeDatasetEvaluator:
                     "Area Covered (km²)": row["Area Covered (km²)"],
                     "Total Path Length (km)": row["Total Path Length (km)"],
                 })
-            
+
             # Use time-series data generated by ComparativeEvaluator
             for algorithm_name, time_series_list in evaluator.time_series_data.items():
                 if algorithm_name not in self.time_series_results:
                     self.time_series_results[algorithm_name] = []
-                
+
                 # Add the time-series data from this evaluator
                 self.time_series_results[algorithm_name].extend(time_series_list)
 
@@ -353,81 +341,59 @@ class ComparativeEvaluator:
     strategies across different datasets and visualizing the results.
     """
 
-
-
-    def __init__(
-        self,
-        dataset_directory="sarenv_dataset",
-        evaluation_sizes=None,
-        num_drones=3,
-        num_lost_persons=100,
-        path_config=None,  # PathGeneratorConfig instance
-        path_generators=None,  # Dict of PathGenerator instances
-        # Legacy parameters for backward compatibility
-        custom_path_generators=None,
-        use_defaults=True,
-    ):
+    def __init__(self, **kwargs):
         """
         Initializes the ComparativeEvaluator.
 
         Args:
-            dataset_directory (str): The path to the sarenv dataset.
-            evaluation_sizes (list, optional): A list of dataset sizes to evaluate.
-            num_drones (int): The number of drones to simulate.
-            num_lost_persons (int): The number of victim locations to generate per dataset.
-            path_config (PathGeneratorConfig, optional): Configuration object for path parameters.
-            path_generators (dict, optional): Dict of {name: PathGenerator} instances.
-            custom_path_generators (dict, optional): Legacy parameter for backward compatibility.
-            use_defaults (bool): Whether to include default path generators.
+            **kwargs: Keyword arguments for evaluation.
+                dataset_directory (str): Path to the sarenv dataset. Defaults to "sarenv_dataset".
+                evaluation_sizes (list): List of dataset sizes to evaluate. Defaults to ["small", "medium", "large", "xlarge"].
+                num_drones (int): The number of drones to simulate. Defaults to 3.
+                num_lost_persons (int): Number of victim locations to generate. Defaults to 100.
+                path_config (PathGeneratorConfig): Configuration for path parameters.
+                path_generators (dict): Dict of {name: PathGenerator} instances.
+                use_defaults (bool): Whether to use default path generators if none are provided. Defaults to True.
         """
-        self.dataset_directory = dataset_directory
-        self.evaluation_sizes = evaluation_sizes or [
+        self.dataset_directory = kwargs.get("dataset_directory", "sarenv_dataset")
+        self.evaluation_sizes = kwargs.get("evaluation_sizes") or [
             "small",
             "medium",
             "large",
-            "xlarge",
+            # "xlarge",
         ]
-        self.num_drones = num_drones
-        self.num_victims = num_lost_persons
+        self.num_victims = kwargs.get("num_lost_persons", 100)
+        self.path_config:PathGeneratorConfig = kwargs.get("path_config")
+        self.num_drones = self.path_config.num_drones if self.path_config else kwargs.get("num_drones", 3)
+        self.path_generators = kwargs.get("path_generators")
+        use_defaults = kwargs.get("use_defaults", True)
+
         self.loader = sarenv.DatasetLoader(dataset_directory=self.dataset_directory)
         self.environments = {}
         self.results = None
         self.time_series_data = {}
 
         # Create path config if not provided
-        if path_config is None:
-            self.path_config = PathGeneratorConfig(num_drones=num_drones)
-        else:
-            self.path_config = path_config
+        if self.path_config is None:
+            self.path_config = PathGeneratorConfig(num_drones=self.num_drones)
 
         # Static budgets for each environment size (in meters)
         self.budget_by_size = {
             "small": 5000.0,    # 5 km
-            "medium": 200000.0,  # 200 km
-            "large": 200000.0,   # 200 km
-            "xlarge": 100000.0,  # 500 km
+            "medium": 400_000.0, # 200 km
+            "large": 600_000.0,  # 200 km
+            "xlarge": 1_000_000.0, # 500 km
         }
 
-        # Set up path generators
-        if path_generators is not None:
-            self.path_generators = path_generators
-        elif custom_path_generators is not None:
-            # Legacy support - convert old style to new style
-            self.path_generators = {}
-            for name, func in custom_path_generators.items():
-                if callable(func):
-                    if isinstance(func, PathGenerator):
-                        self.path_generators[name] = func
-                    else:
-                        self.path_generators[name] = PathGenerator(name, func)
-                else:
-                    log.warning(f"Custom path generator '{name}' is not callable and was skipped.")
-        elif use_defaults:
-            self.path_generators = get_default_path_generators(self.path_config)
-        else:
-            self.path_generators = {}
+        # Set up path generators, defaulting if none are provided
+        if self.path_generators is None:
+            if use_defaults:
+                self.path_generators = get_default_path_generators(self.path_config)
+            else:
+                self.path_generators = {}
 
         self.load_datasets()
+
 
     def load_datasets(self):
         """
@@ -437,7 +403,7 @@ class ComparativeEvaluator:
         log.info(f"Loading datasets for sizes: {self.evaluation_sizes}")
         for size in self.evaluation_sizes:
             item = self.loader.load_environment(size)
-            
+
             if not item:
                 log.warning(f"Could not load data for size '{size}'. Skipping.")
                 continue
@@ -478,7 +444,7 @@ class ComparativeEvaluator:
 
         all_results = []
         self.time_series_data = {}  # Reset time-series data for each evaluation
-        
+
         for size, env_data in self.environments.items():
             item = env_data["item"]
             victims_gdf = env_data["victims"]
@@ -503,7 +469,7 @@ class ComparativeEvaluator:
 
             for name, generator in self.path_generators.items():
                 log.info(f"Running {name} algorithm on '{size}' dataset...")
-                
+
                 # Use the new PathGenerator interface
                 generated_paths = generator.generate(
                     self.path_config,
@@ -515,18 +481,14 @@ class ComparativeEvaluator:
                     current_budget
                 )
 
-                # # Find the maximum length (number of waypoints) among all generated paths
-                # t_end = max(len(path) for path in generated_paths) if generated_paths else 0
-                # discount_factor = (0.05) ** (1 / t_end) if t_end > 0 else 0.999
-
                 all_metrics = evaluator.calculate_all_metrics(
                     generated_paths,
-                    0.999# discount_factor
+                    0.999
                 )
-                
+
                 # Extract results from the returned dictionary
                 victim_metrics = all_metrics['victim_detection_metrics']
-                
+
                 result = {
                     "Dataset": size,
                     "Algorithm": name,
@@ -536,19 +498,19 @@ class ComparativeEvaluator:
                     "Area Covered (km²)": all_metrics['area_covered'],
                     "Total Path Length (km)": all_metrics['total_path_length'],
                 }
-                
+
                 all_results.append(result)
-                
+
                 # Collect time-series data for this algorithm
                 if name not in self.time_series_data:
                     self.time_series_data[name] = []
-                
+
                 # Calculate combined cumulative metrics for time series
                 cumulative_likelihoods = all_metrics['cumulative_likelihoods']
                 if cumulative_likelihoods:
                     # Handle paths with different lengths by padding shorter arrays
                     max_length_ts = max(len(cum_lik) for cum_lik in cumulative_likelihoods)
-                    
+
                     # Pad arrays to the same length and sum
                     padded_arrays = []
                     for cum_lik in cumulative_likelihoods:
@@ -558,9 +520,9 @@ class ComparativeEvaluator:
                         else:
                             padded = cum_lik
                         padded_arrays.append(padded)
-                    
+
                     combined_cumulative_likelihood = np.sum(padded_arrays, axis=0)
-                    
+
                     # Estimate cumulative victims found (simple approximation)
                     # This spreads the total victims found across the time series
                     total_victims_found = victim_metrics['percentage_found'] / 100.0 * self.num_victims
@@ -568,7 +530,7 @@ class ComparativeEvaluator:
                 else:
                     combined_cumulative_likelihood = np.array([0])
                     combined_cumulative_victims = np.array([0])
-                
+
                 # Store time-series results
                 self.time_series_data[name].append({
                     'combined_cumulative_likelihood': combined_cumulative_likelihood,
