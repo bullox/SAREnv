@@ -41,13 +41,13 @@ def create_custom_path_generator():
 
 if __name__ == "__main__":
     log.info("--- Starting Comparative Dataset Evaluator ---")
-    evaluation_size = "small"  # Options: "small", "medium", "large", "xlarge"
+    evaluation_size = ["small", "medium", "large"]  # Options: "small", "medium", "large", "xlarge"
 
     # Example 1: Using default path generators
     evaluator = ComparativeDatasetEvaluator(
         dataset_dirs=[f"sarenv_dataset/{i}" for i in range(1, 5)],
         budget=100_000,
-        num_drones=1,
+        num_drones=5,
         evaluation_size=evaluation_size,  # Budget in meters
     )
     # # Example 2: Using custom path generators

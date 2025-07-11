@@ -7,12 +7,19 @@ This test suite covers two critical bugs:
 """
 
 import sys
+import warnings
 from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import pytest
 from shapely.geometry import LineString
+
+# Suppress known warnings from external libraries
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="geopandas")
+warnings.filterwarnings("ignore", message=".*shapely.geos.*")
+warnings.filterwarnings("ignore", message=".*TripleDES.*")
+warnings.filterwarnings("ignore", message=".*Blowfish.*")
 
 # Add the project root to the path to import sarenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
