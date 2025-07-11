@@ -168,16 +168,16 @@ class PathEvaluator:
             cumulative_discounted_scores_all_paths.append(np.cumsum(path_discounted_likelihoods))
 
         # # --- Geospatial Metrics (handled separately for efficiency) ---
-        # victim_metrics = self._calculate_victims_found_score(paths)
-        # area_covered = self._calculate_area_covered(paths)
+        victim_metrics = self._calculate_victims_found_score(paths)
+        area_covered = self._calculate_area_covered(paths)
         total_path_length = self._calculate_total_path_length(paths)
 
         # 4. Assemble the final results dictionary
         return {
             'total_likelihood_score': total_likelihood,
             'total_time_discounted_score': total_time_discounted_score,
-            'victim_detection_metrics': {'percentage_found': 0, 'found_victim_indices': []},
-            'area_covered': 0,
+            'victim_detection_metrics': victim_metrics,
+            'area_covered': area_covered,
             'total_path_length': total_path_length,
             'cumulative_distances': cumulative_distances_all_paths,
             'cumulative_likelihoods': cumulative_likelihoods_all_paths,

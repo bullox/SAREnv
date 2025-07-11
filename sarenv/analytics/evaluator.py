@@ -6,19 +6,13 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point, LineString
+from shapely.geometry import LineString, Point
 
 import sarenv
-from sarenv.analytics import paths, metrics
+from sarenv.analytics import metrics, paths
 from sarenv.utils import geo
 from sarenv.utils.logging_setup import get_logger
-from sarenv.utils.plot import (
-    plot_aggregate_bars,
-    plot_combined_normalized_bars,
-    plot_time_series_with_ci,
-    plot_combined_time_series_with_ci,
-    plot_single_evaluation_results
-)
+from sarenv.utils.plot import plot_single_evaluation_results
 
 log = get_logger()
 
@@ -28,13 +22,14 @@ class PathGeneratorConfig:
     Provides a clean interface for managing path generation parameters.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, num_drones: int, budget: float, **kwargs):
         """
         Initialize path generation configuration.
 
         Args:
-            **kwargs: Keyword arguments for path generation parameters.
-                num_drones (int): Number of drones to simulate. Defaults to 3.
+            num_drones (int): Number of drones to simulate. Required.
+            budget (float): Budget constraint for path generation. Required.
+            **kwargs: Additional keyword arguments for path generation parameters.
                 fov_degrees (float): Field of view in degrees. Defaults to 45.0.
                 altitude_meters (float): Altitude in meters. Defaults to 80.0.
                 overlap_ratio (float): Overlap ratio for systematic patterns. Defaults to 0.25.
@@ -42,7 +37,8 @@ class PathGeneratorConfig:
                 transition_distance_m (float): Transition distance for concentric patterns. Defaults to 50.0.
                 pizza_border_gap_m (float): Border gap for pizza patterns. Defaults to 15.0.
         """
-        self.num_drones = kwargs.pop('num_drones', 3)
+        self.num_drones = num_drones
+        self.budget = budget
         self.fov_degrees = kwargs.pop('fov_degrees', 45.0)
         self.altitude_meters = kwargs.pop('altitude_meters', 80.0)
         self.overlap_ratio = kwargs.pop('overlap_ratio', 0)
@@ -60,7 +56,6 @@ class PathGeneratorConfig:
         max_radius: float,
         probability_map: np.ndarray | None,
         bounds: tuple[float, float, float, float] | None,
-        budget: float | None = None
     ) -> dict[str, float | int | np.ndarray | tuple | None]:
         """
         Generate a complete parameter dictionary for path generation.
@@ -71,7 +66,6 @@ class PathGeneratorConfig:
             max_radius: Maximum search radius
             probability_map: Optional probability map for informed search
             bounds: Optional geographic bounds tuple
-            budget: Optional budget constraint
 
         Returns:
             Dictionary with all parameters needed for path generation
@@ -83,6 +77,7 @@ class PathGeneratorConfig:
             'probability_map': probability_map,
             'bounds': bounds,
             'num_drones': self.num_drones,
+            'budget': self.budget,
             'fov_deg': self.fov_degrees,
             'altitude': self.altitude_meters,
             'overlap': self.overlap_ratio,
@@ -90,9 +85,6 @@ class PathGeneratorConfig:
             'transition_distance_m': self.transition_distance_m,
             'border_gap_m': self.pizza_border_gap_m,
         }
-
-        if budget is not None:
-            params['budget'] = budget
 
         # Add any additional parameters
         params.update(self.additional_params)
@@ -136,7 +128,6 @@ class PathGenerator:
             max_radius: Maximum radius for the search area
             probability_map: Optional probability map for informed search
             bounds: Optional geographic bounds tuple
-            budget: Optional budget constraint in meters
 
         Returns:
             List of LineString objects representing paths for each drone
@@ -157,10 +148,10 @@ class PathGenerator:
 def get_default_path_generators(config: PathGeneratorConfig) -> dict[str, PathGenerator]:
     """
     Get default path generators with consistent parameter handling.
-    
+
     Args:
         config: Configuration object containing default parameters for path generation
-        
+
     Returns:
         Dictionary of PathGenerator instances
     """
@@ -194,7 +185,7 @@ def get_default_path_generators(config: PathGeneratorConfig) -> dict[str, PathGe
             func=paths.generate_pizza_zigzag_path,
             path_generator_config=config,
             description="Pizza slice zigzag path generation"
-            
+
         )
     }
 
@@ -202,39 +193,58 @@ def get_default_path_generators(config: PathGeneratorConfig) -> dict[str, PathGe
 class ComparativeDatasetEvaluator:
     """
     Evaluates multiple datasets using ComparativeEvaluator to minimize code duplication.
-    Provides time-series plotting and confidence interval analysis.
+    Combines all results into DataFrames and saves them to CSV files for further analysis.
+
+    This class focuses solely on running experiments and managing data - all plotting
+    and visualization should be handled externally using the returned DataFrames.
     """
 
-    def __init__(self, dataset_dirs, **kwargs):
+    def __init__(self,
+                 dataset_dirs=None,
+                 evaluation_sizes=None,
+                 num_drones=1,
+                 num_lost_persons=100,
+                 budget=100_000,
+                 **kwargs):
         """
         Initializes the ComparativeDatasetEvaluator.
 
         Args:
-            dataset_dirs (list): A list of directories for the datasets to be evaluated. \\
-            **kwargs: Keyword arguments for evaluation and path generation. \\
-                path_generators (dict): Dict of {name: PathGenerator} instances. \\
-                num_victims (int): Number of victim locations per dataset. Defaults to 100. \\
-                evaluation_size (str): Dataset size to evaluate. Defaults to "medium". \\
-                discount_factor (float): Discount factor for time-based scores. Defaults to 0.999. \\
-                num_drones (int): Number of drones to simulate. Defaults to 3.\\
-                fov_degrees (float): Camera field of view in degrees. Defaults to 45.0.\\
-                altitude_meters (float): Drone altitude in meters. Defaults to 80.0.\\
-                overlap_ratio (float): Overlap ratio for patterns. Defaults to 0.25.\\
-                path_point_spacing_m (float): Spacing between path points. Defaults to 10.0.\\
-                transition_distance_m (float): Transition distance for concentric patterns. Defaults to 50.0.\\
-                pizza_border_gap_m (float): Border gap for pizza patterns. Defaults to 15.0.\\
+            dataset_dirs (list): A list of directories for the datasets to be evaluated.
+                                Defaults to ["sarenv_dataset/1", "sarenv_dataset/2", "sarenv_dataset/3", "sarenv_dataset/4"].
+            evaluation_sizes (list): List of dataset sizes to evaluate. Defaults to ["medium"].
+            num_drones (int): Number of drones to simulate. Defaults to 1.
+            num_lost_persons (int): Number of victim locations to generate. Defaults to 100.
+            budget (int): Budget constraint for path generation. Defaults to 100,000.
+            **kwargs: Additional keyword arguments for evaluation and path generation.
+                path_generator_config (PathGeneratorConfig): Configuration for path parameters.
+                path_generators (dict): Dict of {name: PathGenerator} instances.
+                discount_factor (float): Discount factor for time-based scores. Defaults to 0.999.
+                fov_degrees (float): Camera field of view in degrees. Defaults to 45.0.
+                altitude_meters (float): Drone altitude in meters. Defaults to 80.0.
+                overlap_ratio (float): Overlap ratio for patterns. Defaults to 0.25.
+                path_point_spacing_m (float): Spacing between path points. Defaults to 10.0.
+                transition_distance_m (float): Transition distance for concentric patterns. Defaults to 50.0.
+                pizza_border_gap_m (float): Border gap for pizza patterns. Defaults to 15.0.
         """
-        self.dataset_dirs = dataset_dirs
-
-        # Extract evaluation-specific parameters from kwargs
-        path_generators = kwargs.get("path_generators")
-        self.num_victims = kwargs.get("num_victims", 100)
-        self.evaluation_size = kwargs.get("evaluation_size", "medium")
+        # Set default parameters
+        self.dataset_dirs = dataset_dirs or [f"sarenv_dataset/{i}" for i in range(1, 5)]
+        self.evaluation_sizes = evaluation_sizes or ["medium"]
+        self.num_drones = num_drones
+        self.num_victims = num_lost_persons
+        self.budget = budget
         self.discount_factor = kwargs.get("discount_factor", 0.999)
 
-        # Create path generator configuration from all kwargs
-        self.path_generator_config = PathGeneratorConfig(**kwargs)
-        self.dataset_dirs = dataset_dirs
+        # Extract path generator configuration
+        path_generators = kwargs.get("path_generators")
+        path_generator_config = kwargs.get("path_generator_config")
+
+        # Create path generator configuration if not provided
+        if path_generator_config is None:
+            self.path_generator_config = PathGeneratorConfig(num_drones=self.num_drones, budget=self.budget,**kwargs.copy())
+        else:
+            self.path_generator_config = path_generator_config
+
         # Set up path generators
         if path_generators is None:
             self.path_generators = get_default_path_generators(self.path_generator_config)
@@ -252,22 +262,31 @@ class ComparativeDatasetEvaluator:
                         description=f"Custom generator: {name}"
                     )
 
-        # Storage for summary and time-series results
-        self.summary_results = []
-        self.time_series_results = {name: [] for name in self.path_generators}
 
-    def evaluate(self):
+        # Storage for combined results
+        self.metrics_results = []
+        self.time_series_results = []
+        self.path_results = []  # Store generated paths
+
+    def evaluate(self, output_dir):
         """
         Evaluates all path generators across all datasets using ComparativeEvaluator instances.
-        Now only uses data generated by ComparativeEvaluator - no direct path evaluation.
+        Combines all data into DataFrames and saves them to files.
+
+        Args:
+            output_dir (str): Directory to save the results files. Defaults to "results".
+
+        Returns:
+            tuple: (metrics_df, time_series_df) - Combined DataFrames with all results
         """
         # Create a ComparativeEvaluator for each dataset
         self.evaluators = []
+
         for dataset_dir in self.dataset_dirs:
             # Pass necessary parameters to ComparativeEvaluator
             evaluator = ComparativeEvaluator(
                 dataset_directory=dataset_dir,
-                evaluation_sizes=[self.evaluation_size],
+                evaluation_sizes=self.evaluation_sizes,
                 num_lost_persons=self.num_victims,
                 path_generator_config=self.path_generator_config,
                 path_generators=self.path_generators,
@@ -279,43 +298,126 @@ class ComparativeDatasetEvaluator:
             log.info(f"Evaluating dataset: {dataset_dir}")
 
             # Run evaluation for this dataset
-            results_df = evaluator.run_baseline_evaluations()
+            results_df, time_series_data = evaluator.run_baseline_evaluations()
 
             if results_df.empty:
                 continue
 
-            # Store summary results from ComparativeEvaluator
+            # Store metrics results from ComparativeEvaluator
             for _, row in results_df.iterrows():
-                self.summary_results.append({
-                    "Algorithm": row["Algorithm"],
-                    "Dataset": Path(dataset_dir).name,
-                    "Likelihood Score": row["Likelihood Score"],
-                    "Time-Discounted Score": row["Time-Discounted Score"],
-                    "Victims Found (%)": row["Victims Found (%)"],
-                    "Area Covered (km²)": row["Area Covered (km²)"],
-                    "Total Path Length (km)": row["Total Path Length (km)"],
-                })
+                # Convert the entire row to a dictionary and add dataset directory name
+                result_dict = row.to_dict()
+                result_dict["Dataset"] = Path(dataset_dir).name
+                self.metrics_results.append(result_dict)
 
-            # Use time-series data generated by ComparativeEvaluator
-            for algorithm_name, time_series_list in evaluator.time_series_data.items():
-                if algorithm_name not in self.time_series_results:
-                    self.time_series_results[algorithm_name] = []
+            # Process time-series data from ComparativeEvaluator and capture paths
+            for algorithm_name, time_series_list in time_series_data.items():
+                for i, time_series_data in enumerate(time_series_list):
+                    # Process individual drone data
+                    individual_drone_data = time_series_data.get('individual_drone_data', [])
+                    
+                    # Get the environment size from the results for this algorithm
+                    algorithm_results = results_df[results_df['Algorithm'] == algorithm_name]
+                    environment_size = algorithm_results['Environment Size'].iloc[0] if not algorithm_results.empty else "unknown"
 
-                # Add the time-series data from this evaluator
-                self.time_series_results[algorithm_name].extend(time_series_list)
+                    # Create rows for each drone's timesteps
+                    for drone_data in individual_drone_data:
+                        drone_id = drone_data['drone_id']
+                        cumulative_likelihood = drone_data['cumulative_likelihood']
+                        positions = drone_data['positions']
+
+                        # Calculate per-drone victims (distribute total across drones)
+                        total_victims_found = results_df.iloc[-1]["Victims Found (%)"] / 100.0 * self.num_victims if not results_df.empty else 0
+                        per_drone_victims = total_victims_found / len(individual_drone_data) if individual_drone_data else 0
+
+                        for t, likelihood in enumerate(cumulative_likelihood):
+                            # Get the path position for this timestep
+                            path_x, path_y = None, None
+                            if t < len(positions):
+                                path_x, path_y = positions[t]
+
+                            # Calculate cumulative victims for this drone
+                            drone_victims = per_drone_victims * (t + 1) / len(cumulative_likelihood) if len(cumulative_likelihood) > 0 else 0
+
+                            self.time_series_results.append({
+                                "Algorithm": algorithm_name,
+                                "Dataset": Path(dataset_dir).name,
+                                "Environment Size": environment_size,
+                                "Run": i,
+                                "Agent_ID": drone_id,
+                                "Time_Step": t,
+                                "Cumulative_Likelihood": likelihood,
+                                "Cumulative_Victims": drone_victims,
+                                "Path_X": path_x,
+                                "Path_Y": path_y,
+                            })
+
+        # Create DataFrames from the collected results
+        metrics_df = pd.DataFrame(self.metrics_results)
+        time_series_df = pd.DataFrame(self.time_series_results)
+
+        if output_dir is not None:
+            self.save_results(metrics_df, time_series_df, output_dir)
+
+        return metrics_df, time_series_df
+
+    def save_results(self, metrics_df: pd.DataFrame, time_series_df: pd.DataFrame, output_dir: str = "results"):
+        """
+        Save the metrics, time-series, and paths results to CSV files.
+
+        Args:
+            metrics_df (pd.DataFrame): DataFrame containing metrics results
+            time_series_df (pd.DataFrame): DataFrame containing time-series results
+            output_dir (str): Directory to save the files
+        """
+        # Create output directory if it doesn't exist
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Save metrics results
+        metrics_file = Path(output_dir) / "comparative_metrics_results.csv"
+        metrics_df.to_csv(metrics_file, index=False)
+        log.info(f"Saved metrics results to: {metrics_file}")
+
+        # Save time-series results
+        time_series_file = Path(output_dir) / "comparative_time_series_results.csv"
+        time_series_df.to_csv(time_series_file, index=False)
+        log.info(f"Saved time-series results to: {time_series_file}")
+
+        # Save paths results
+
+    def get_metrics_results(self) -> pd.DataFrame:
+        """
+        Returns the metrics results as a DataFrame.
+        """
+        return pd.DataFrame(self.metrics_results)
+
+    def get_time_series_results(self) -> pd.DataFrame:
+        """
+        Returns the time-series results as a DataFrame.
+        """
+        return pd.DataFrame(self.time_series_results)
+
+    def get_paths_results(self) -> pd.DataFrame:
+        """
+        Returns the paths results as a DataFrame.
+        """
+        return pd.DataFrame(self.path_results)
 
     def get_results_per_dataset(self) -> pd.DataFrame:
         """
         Returns the results as a DataFrame grouped by dataset.
         """
-        return pd.DataFrame(self.summary_results).groupby("Dataset").apply(lambda x: x.reset_index(drop=True))
+        return pd.DataFrame(self.metrics_results).groupby("Dataset").apply(lambda x: x.reset_index(drop=True))
 
     def summarize_results(self) -> pd.DataFrame:
         """
         Returns a summary DataFrame grouped by algorithm with means and 95% confidence intervals.
         """
-        results_df = pd.DataFrame(self.summary_results)
-        self.summary = results_df.groupby("Algorithm").agg(
+        results_df = pd.DataFrame(self.metrics_results)
+        if results_df.empty:
+            return pd.DataFrame()
+
+        return results_df.groupby("Algorithm").agg(
             Mean_Likelihood_Score=('Likelihood Score', 'mean'),
             CI_Likelihood_Score=('Likelihood Score', lambda x: 1.96 * x.sem()),
             Mean_Time_Discounted=('Time-Discounted Score', 'mean'),
@@ -327,39 +429,6 @@ class ComparativeDatasetEvaluator:
             Mean_Path_Length=('Total Path Length (km)', 'mean'),
             CI_Path_Length=('Total Path Length (km)', lambda x: 1.96 * x.sem()),
         ).reset_index()
-        return self.summary
-
-    def plot_aggregate_bars(self, output_dir="graphs/aggregate"):
-        """Plot aggregate bar charts for each metric across all datasets."""
-        plot_aggregate_bars(self.summary, self.evaluation_size, output_dir)
-
-    def plot_combined_normalized_bars(self, output_dir="graphs/aggregate"):
-        """
-        Creates a grouped bar chart comparing algorithms across normalized metrics (0 to 1 scale).
-        Excludes Average Detection Distance.
-        """
-        plot_combined_normalized_bars(self.summary, self.evaluation_size, output_dir)
-
-    def plot_time_series_with_ci(self, output_dir="graphs/plots"):
-        """
-        For each algorithm, plot mean and 95% CI for time-series metrics.
-        """
-        plot_time_series_with_ci(self.time_series_results, self.evaluation_size, output_dir)
-
-    def plot_combined_normalized_bars_with_ci(self, output_dir="graphs/aggregate"):
-        """
-        Creates a grouped bar chart comparing algorithms across normalized metrics (0 to 1 scale)
-        with 95% confidence intervals.
-        Excludes Average Detection Distance.
-        """
-        plot_combined_normalized_bars(self.summary, self.evaluation_size, output_dir)
-
-    def plot_combined_time_series_with_ci(self, output_dir="graphs/plots"):
-        """
-        Plot all algorithms in a single figure with four subplots arranged vertically.
-        Each subplot shows time-series metrics with 95% CI for one algorithm.
-        """
-        plot_combined_time_series_with_ci(self.time_series_results, self.evaluation_size, output_dir)
 
 
 class ComparativeEvaluator:
@@ -370,32 +439,36 @@ class ComparativeEvaluator:
     strategies across different datasets and visualizing the results.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self,
+                 dataset_directory="sarenv_dataset",
+                 evaluation_sizes=None,
+                 num_drones=1,
+                 num_lost_persons=100,
+                 budget=100_000,
+                 **kwargs):
         """
         Initializes the ComparativeEvaluator.
 
         Args:
-            **kwargs: Keyword arguments for evaluation.
-                dataset_directory (str): Path to the sarenv dataset. Defaults to "sarenv_dataset".
-                evaluation_sizes (list): List of dataset sizes to evaluate. Defaults to ["small", "medium", "large", "xlarge"].
-                num_drones (int): The number of drones to simulate. Defaults to 3.
-                num_lost_persons (int): Number of victim locations to generate. Defaults to 100.
+            dataset_directory (str): Path to the sarenv dataset. Defaults to "sarenv_dataset".
+            evaluation_sizes (list): List of dataset sizes to evaluate. Defaults to ["small", "medium", "large"].
+            num_drones (int): The number of drones to simulate. Defaults to 1.
+            num_lost_persons (int): Number of victim locations to generate. Defaults to 100.
+            budget (int): Budget constraint for path generation. Defaults to 100,000.
+            **kwargs: Additional keyword arguments for evaluation.
                 path_generator_config (PathGeneratorConfig): Configuration for path parameters.
                 path_generators (dict): Dict of {name: PathGenerator} instances.
                 use_defaults (bool): Whether to use default path generators if none are provided. Defaults to True.
         """
-        self.dataset_directory = kwargs.get("dataset_directory", "sarenv_dataset")
-        self.evaluation_sizes = kwargs.get("evaluation_sizes") or [
-            "small",
-            "medium",
-            "large",
-            # "xlarge",
-        ]
-        self.num_victims = kwargs.get("num_lost_persons", 100)
-        self.path_generator_config:PathGeneratorConfig = PathGeneratorConfig(**kwargs)
-        self.num_drones = self.path_generator_config.num_drones if self.path_generator_config else kwargs.get("num_drones", 3)
+        self.dataset_directory = dataset_directory
+        self.evaluation_sizes = evaluation_sizes or ["small", "medium", "large"]
+        self.num_victims = num_lost_persons
+        self.num_drones = num_drones
+        self.budget = budget
+        
+        # Create path generator configuration with explicit parameters
+        self.path_generator_config = PathGeneratorConfig(num_drones=self.num_drones, budget=self.budget,**kwargs.copy())
         self.path_generators = kwargs.get("path_generators")
-        use_defaults = kwargs.get("use_defaults", True)
 
         self.loader = sarenv.DatasetLoader(dataset_directory=self.dataset_directory)
         self.environments = {}
@@ -404,14 +477,22 @@ class ComparativeEvaluator:
 
         # Set up path generators, defaulting if none are provided
         if self.path_generators is None:
-            if use_defaults:
-                if self.path_generator_config:
-                    self.path_generators = get_default_path_generators(self.path_generator_config)
+            self.path_generators = get_default_path_generators(self.path_generator_config)
+        else:
+            # Wrap custom generators with PathGenerator if needed
+            wrapped_generators = {}
+            for name, generator in self.path_generators.items():
+                if isinstance(generator, PathGenerator):
+                    wrapped_generators[name] = generator
                 else:
-                    config = PathGeneratorConfig(num_drones=self.num_drones)
-                    self.path_generators = get_default_path_generators(config)
-            else:
-                self.path_generators = {}
+                    # Assume it's a function and wrap it
+                    wrapped_generators[name] = PathGenerator(
+                        name=name,
+                        func=generator,
+                        path_generator_config=self.path_generator_config,
+                        description=f"Custom generator: {name}"
+                    )
+            self.path_generators = wrapped_generators
 
         self.load_datasets()
 
@@ -452,12 +533,13 @@ class ComparativeEvaluator:
             }
         log.info("All datasets loaded and prepared.")
 
-    def run_baseline_evaluations(self) -> pd.DataFrame:
+    def run_baseline_evaluations(self) -> tuple[pd.DataFrame, dict]:
         """
         Runs all baseline algorithms across all loaded datasets.
 
         Returns:
-            pd.DataFrame: A DataFrame containing the comparative results.
+            tuple: (metrics_df, time_series_data) - A tuple containing the metrics DataFrame
+                   and time series data dictionary.
         """
         if not self.environments:
             log.error("No datasets loaded. Please call 'load_datasets()' first.")
@@ -508,6 +590,10 @@ class ComparativeEvaluator:
                 result = {
                     "Dataset": size,
                     "Algorithm": name,
+                    "Environment Type": item.environment_type,
+                    "Climate": item.environment_climate,
+                    "Environment Size": size,
+                    "n_agents": self.path_generator_config.num_drones,
                     "Likelihood Score": all_metrics['total_likelihood_score'],
                     "Time-Discounted Score": all_metrics['total_time_discounted_score'],
                     "Victims Found (%)": victim_metrics['percentage_found'],
@@ -524,39 +610,57 @@ class ComparativeEvaluator:
                 # Calculate combined cumulative metrics for time series
                 cumulative_likelihoods = all_metrics['cumulative_likelihoods']
                 if cumulative_likelihoods:
-                    # Handle paths with different lengths by padding shorter arrays
-                    max_length_ts = max(len(cum_lik) for cum_lik in cumulative_likelihoods)
+                    # Instead of combining, we'll store individual drone data with agent IDs
+                    individual_drone_data = []
 
-                    # Pad arrays to the same length and sum
-                    padded_arrays = []
-                    for cum_lik in cumulative_likelihoods:
-                        if len(cum_lik) < max_length_ts:
-                            # Pad with the last value (constant extrapolation)
-                            padded = np.pad(cum_lik, (0, max_length_ts - len(cum_lik)), mode='edge')
-                        else:
-                            padded = cum_lik
-                        padded_arrays.append(padded)
+                    for drone_idx, cum_lik in enumerate(cumulative_likelihoods):
+                        if len(cum_lik) > 0 and drone_idx < len(generated_paths):
+                            drone_path = generated_paths[drone_idx]
 
-                    combined_cumulative_likelihood = np.sum(padded_arrays, axis=0)
+                            # Get path positions for this specific drone
+                            drone_positions = []
+                            if not drone_path.is_empty and drone_path.length > 0:
+                                # Use the same interpolation logic as in PathEvaluator
+                                interpolation_resolution = int(np.ceil(self.loader._meter_per_bin / 2))
+                                num_points = int(np.ceil(drone_path.length / interpolation_resolution)) + 1
+                                distances = np.linspace(0, drone_path.length, num_points)
 
-                    # Estimate cumulative victims found (simple approximation)
-                    # This spreads the total victims found across the time series
-                    total_victims_found = victim_metrics['percentage_found'] / 100.0 * self.num_victims
-                    combined_cumulative_victims = np.linspace(0, total_victims_found, max_length_ts)
+                                # Interpolate points along the path
+                                for d in distances:
+                                    point = drone_path.interpolate(d)
+                                    drone_positions.append((point.x, point.y))
+
+                                # If we have more timesteps than path positions, pad with the last position
+                                while len(drone_positions) < len(cum_lik):
+                                    if drone_positions:
+                                        drone_positions.append(drone_positions[-1])
+                                    else:
+                                        drone_positions.append((0, 0))
+
+                                # If we have more path positions than timesteps, truncate
+                                drone_positions = drone_positions[:len(cum_lik)]
+                            else:
+                                # Empty path case
+                                drone_positions = [(0, 0)] * len(cum_lik)
+
+                            # Store individual drone data
+                            individual_drone_data.append({
+                                'drone_id': drone_idx,
+                                'cumulative_likelihood': cum_lik,
+                                'positions': drone_positions
+                            })
                 else:
-                    combined_cumulative_likelihood = np.array([0])
-                    combined_cumulative_victims = np.array([0])
+                    individual_drone_data = []
 
-                # Store time-series results
+                # Store time-series results with only individual drone data
                 self.time_series_data[name].append({
-                    'combined_cumulative_likelihood': combined_cumulative_likelihood,
-                    'combined_cumulative_victims': combined_cumulative_victims,
+                    'individual_drone_data': individual_drone_data,
                 })
 
         self.results = pd.DataFrame(all_results)
         log.info("--- Baseline Evaluation Complete ---")
         log.info(f"Results:\n{self.results.to_string()}")
-        return self.results
+        return self.results, self.time_series_data
 
     def plot_results(self, results_df: pd.DataFrame = None, output_dir="graphs"):
         """
