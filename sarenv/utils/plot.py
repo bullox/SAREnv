@@ -3,9 +3,12 @@
 Collection of visualization functions for SARenv data.
 """
 import os
+from pathlib import Path
 
 import contextily as cx
 import geopandas as gpd
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for scientific plotting
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -62,13 +65,12 @@ COLORS_BLUE = [
 
 # === PATH PLOTTING FUNCTIONS ===
 
-def plot_heatmap(item, victims_gdf, generated_paths, name, x_min, x_max, y_min, y_max, output_file):
+def plot_heatmap(item, generated_paths, name, x_min, x_max, y_min, y_max, output_file):
     """
     Plot paths on a probability heatmap with victims marked.
     
     Args:
         item (SARDatasetItem): The dataset item containing the heatmap
-        victims_gdf (GeoDataFrame): GeoDataFrame containing victim locations
         generated_paths (list): List of path geometries to plot
         name (str): Name/title for the plot
         x_min, x_max, y_min, y_max (float): Coordinate bounds for the plot
@@ -86,9 +88,6 @@ def plot_heatmap(item, victims_gdf, generated_paths, name, x_min, x_max, y_min, 
             origin='lower'
         )
     
-    # Plot victims if available
-    if not victims_gdf.empty:
-        victims_gdf.plot(ax=ax, color='red', marker='x', markersize=50, label='Victims', zorder=5)
     
     # Plot paths
     colors = COLORS_BLUE
@@ -103,19 +102,18 @@ def plot_heatmap(item, victims_gdf, generated_paths, name, x_min, x_max, y_min, 
             x, y = path.xy
             ax.plot(x, y, color=color, linewidth=line_width, zorder=10)
     
-    # Format axes
-    x_ticks = ax.get_xticks()
-    y_ticks = ax.get_yticks()
-    ax.set_xticklabels([f"{x/1000:.1f}" for x in x_ticks])
-    ax.set_yticklabels([f"{y/1000:.1f}" for y in y_ticks])
-    ax.set_xlabel("Easting (km)")
-    ax.set_ylabel("Northing (km)")
+    # Format axes - remove all ticks, labels, and borders
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
     ax.set_aspect('equal')
     
-    if not victims_gdf.empty:
-        ax.legend()
+    # Remove all ticks, labels, and spines
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    for spine in ax.spines.values():
+        spine.set_visible(False)
     
     # Save the plot
     fig.savefig(output_file, format='pdf', dpi=200, bbox_inches='tight')
@@ -392,7 +390,7 @@ def plot_single_evaluation_results(results_df, evaluation_sizes, output_dir="gra
         evaluation_sizes (list): List of evaluation sizes for ordering
         output_dir (str): The directory to save the plots in
     """
-    if results_df is None or results_df.empty:
+    if results_df is None:
         log.error("No results to plot. Please run an evaluation first.")
         return
 
@@ -428,6 +426,207 @@ def plot_single_evaluation_results(results_df, evaluation_sizes, output_dir="gra
         log.info(f"Saved plot to {plot_filename}")
         plt.close()
 
+
+# === COMPARATIVE RESULTS PLOTTING FUNCTIONS ===
+
+def create_individual_metric_plots(df_or_files, environment_size, output_dir="plots", budget_labels=None):
+    """
+    Create separate bar plots for each metric, saved as individual PDF files.
+    Now creates grouped bar plots with data from both budget conditions.
+    
+    Args:
+        df_or_files: Either a pandas DataFrame or a list of file paths to CSV files
+        environment_size: Environment size to filter by
+        output_dir: Directory to save plots
+        budget_labels: Optional list of budget labels (if using multiple files)
+    """
+    # Set scientific plotting style
+    plt.style.use('seaborn-v0_8-whitegrid')
+    sns.set_palette("Set2")  # Scientific colorblind-friendly palette
+
+    # Enable mathematical notation (try LaTeX, fallback to mathtext)
+    try:
+        plt.rcParams['text.usetex'] = True
+        plt.rcParams['font.family'] = 'serif'
+    except Exception:
+        # Fallback to mathtext if LaTeX is not available
+        plt.rcParams['text.usetex'] = False
+        plt.rcParams['mathtext.default'] = 'regular'
+    
+    def calculate_ci(data, confidence=0.95):
+        """Calculate confidence interval for the given data."""
+        n = len(data)
+        if n < 2:
+            return 0
+
+        sem = stats.sem(data)  # Standard error of the mean
+        t_val = stats.t.ppf((1 + confidence) / 2, n - 1)
+        return t_val * sem
+    
+    # Handle both single DataFrame and multiple files
+    if isinstance(df_or_files, pd.DataFrame):
+        # Single DataFrame case
+        combined_df = df_or_files
+    else:
+        # Multiple files case
+        if isinstance(df_or_files, list | tuple):
+            file_paths = df_or_files
+        else:
+            # Single file path
+            file_paths = [df_or_files]
+        
+        # Load and combine multiple files
+        dataframes = []
+        for i, file_path in enumerate(file_paths):
+            try:
+                data_df = pd.read_csv(file_path)
+                
+                # Add budget condition labels
+                if budget_labels and i < len(budget_labels):
+                    data_df['Budget Condition'] = budget_labels[i]
+                elif len(file_paths) > 1:
+                    # Auto-generate labels if not provided
+                    data_df['Budget Condition'] = f'Condition {i+1}'
+                else:
+                    # Single file case - no budget condition needed
+                    data_df['Budget Condition'] = 'Default'
+                
+                dataframes.append(data_df)
+            except FileNotFoundError:
+                log.warning(f"Could not find file: {file_path}")
+                continue
+            except Exception as e:
+                log.error(f"Error loading file {file_path}: {e}")
+                continue
+        
+        if not dataframes:
+            log.error("No valid data files found")
+            return
+        
+        combined_df = pd.concat(dataframes, ignore_index=True)
+    
+    # Filter data for the specific environment size
+    size_data = combined_df[combined_df['Environment Size'] == environment_size].copy()
+
+    if size_data.empty:
+        log.warning(f"No data found for environment size: {environment_size}")
+        return
+
+    # Rename algorithms for cleaner display
+    size_data['Algorithm'] = size_data['Algorithm'].replace('RandomWalk', 'Random')
+
+    # Metrics to plot with their mathematical notation
+    metrics = {
+        'Likelihood Score': {'column': 'Likelihood Score', 'unit': r'$\mathcal{L}(\pi)$'},
+        'Time-Discounted Score': {'column': 'Time-Discounted Score', 'unit': r'$\mathcal{I}(\pi)$'},
+        'Victims Found (%)': {'column': 'Victims Found (%)', 'unit': r'$\mathcal{D}(\pi)$'}
+    }
+
+    algorithms = sorted([alg for alg in size_data['Algorithm'].unique() if alg != 'Spiral'])
+    budgets = sorted(size_data['Budget Condition'].unique())
+
+    # Create separate plot for each metric
+    for metric_name, metric_info in metrics.items():
+        fig, ax = plt.subplots(figsize=(8,8))
+
+        # Prepare data for this metric
+        n_algorithms = len(algorithms)
+        n_budgets = len(budgets)
+
+        # Set up grouped bar positions
+        bar_width = 0.35
+        x_positions = np.arange(n_algorithms)
+
+        # Colors for different budgets - use seaborn Set2 palette
+        colors = sns.color_palette("Set2", n_budgets)
+
+        for i, budget in enumerate(budgets):
+            means = []
+            cis = []
+
+            for algorithm in algorithms:
+                alg_budget_data = size_data[
+                    (size_data['Algorithm'] == algorithm) &
+                    (size_data['Budget Condition'] == budget)
+                ]
+                values = alg_budget_data[metric_info['column']].to_numpy()
+
+                if len(values) > 0:
+                    mean_val = np.mean(values)
+                    ci_val = calculate_ci(values)
+                else:
+                    mean_val = 0
+                    ci_val = 0
+
+                means.append(mean_val)
+                cis.append(ci_val)
+
+            # Position bars for this budget condition
+            bar_positions = x_positions + i * bar_width
+
+            bars = ax.bar(bar_positions, means, bar_width,
+                         label=f'{budget}', color=colors[i], alpha=0.8,
+                         yerr=cis, capsize=5, error_kw={'linewidth': 1.5})
+
+            # Add value labels
+            for bar, mean, ci in zip(bars, means, cis, strict=True):
+                if mean > 0:  # Only add label if there's data
+                    height = bar.get_height()
+                    text_y = height + ci
+                    ax.text(bar.get_x() + bar.get_width()/2., text_y,
+                           f'{mean:.3f}', ha='center', va='bottom', fontsize=17)
+
+        # Customize subplot
+        ax.set_ylabel(metric_info['unit'], fontsize=36, fontweight='bold')
+        ax.set_xticks(x_positions + bar_width / 2)
+        ax.set_xticklabels(algorithms, rotation=45, ha='right', fontsize=26)
+        ax.tick_params(axis='y', labelsize=26)
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # Change legend title font size
+        legend = ax.legend(fontsize=20, title="Budget", frameon=True, fancybox=True, edgecolor='black')
+        if legend.get_title() is not None:
+            legend.get_title().set_fontsize(20)
+
+        # Adjust y-axis limits to ensure labels are visible
+        current_ylim = ax.get_ylim()
+        all_means = []
+        all_cis = []
+        for budget in budgets:
+            for algorithm in algorithms:
+                if algorithm == 'Spiral':
+                    continue
+                alg_budget_data = size_data[
+                    (size_data['Algorithm'] == algorithm) &
+                    (size_data['Budget Condition'] == budget)
+                ]
+                
+                values = alg_budget_data[metric_info['column']].to_numpy()
+                if len(values) > 0:
+                    all_means.append(np.mean(values))
+                    all_cis.append(calculate_ci(values))
+
+        if all_means:
+            max_value = max(all_means)
+            max_ci = max(all_cis)
+            new_ylim_top = (max_value + max_ci) * 1.15
+            ax.set_ylim(current_ylim[0], new_ylim_top)
+
+        plt.tight_layout()
+
+        # Save individual plot as PDF
+        output_path = Path(output_dir)
+        output_path.mkdir(exist_ok=True)
+
+        # Clean metric name for filename
+        clean_metric_name = metric_name.replace(' ', '_').replace('(', '').replace(')', '').replace('%', 'percent')
+        pdf_filename = f"{clean_metric_name}_{environment_size}_grouped.pdf"
+        pdf_filepath = output_path / pdf_filename
+
+        plt.savefig(pdf_filepath, bbox_inches='tight', dpi=300)
+        log.info(f"Individual metric plot saved to: {pdf_filepath}")
+
+        plt.close()  # Close the figure to free memory
 
 # === EXISTING PLOTTING FUNCTIONS ===
 
@@ -473,18 +672,18 @@ def visualize_heatmap(item: SARDatasetItem, plot_basemap: bool = True, plot_inse
     center_point_proj = center_point_gdf.to_crs(crs=data_crs)
     legend_handles = []
     colors = ["blue", "orange", "red", "green"]
-    labels = ["25th", "50th", "75th", "95th"]
+    labels = ["Small", "Medium", "Large", "Extra Large"]
     # Plot main radius circles with zorder=2 so they are on top of connector lines
     for idx, r in enumerate(radii):
         circle = center_point_proj.buffer(r * 1000).iloc[0]
         color = colors[idx % len(colors)]
         gpd.GeoSeries([circle], crs=data_crs).boundary.plot(
             ax=ax, edgecolor=color, linestyle="--", linewidth=2, alpha=1, zorder=2)
-        label = f"Radius: {labels[idx]} ({r} km)"
+        label = f"{labels[idx]} ({r} km)"
         legend_handles.append(
             Line2D([0], [0], color=color, lw=2.5, linestyle="--", label=label)
         )
-    ax.legend(handles=legend_handles, title="Legend", loc="upper left", fontsize=16, title_fontsize=18)
+    ax.legend(handles=legend_handles, title="RoIs", loc="upper left", fontsize=16, title_fontsize=18)
 
     if plot_inset:
         medium_radius_idx = 1
@@ -538,10 +737,10 @@ def visualize_heatmap(item: SARDatasetItem, plot_basemap: bool = True, plot_inse
     
     x_ticks = ax.get_xticks()
     y_ticks = ax.get_yticks()
-    ax.set_xticklabels([f"{x/1000:.1f}" for x in x_ticks])
-    ax.set_yticklabels([f"{y/1000:.1f}" for y in y_ticks])
-    ax.set_xlabel("Easting (km)")
-    ax.set_ylabel("Northing (km)")
+    ax.set_xticklabels([f"{x/1000:.1f}" for x in x_ticks], fontsize=18)
+    ax.set_yticklabels([f"{y/1000:.1f}" for y in y_ticks], fontsize=18)
+    ax.set_xlabel("Easting (km)", fontsize=18)
+    ax.set_ylabel("Northing (km)", fontsize=18)
     plt.tight_layout(rect=[0, 0, 0.85, 1])
     plt.savefig(f"heatmap_{item.size}_magnified.pdf", bbox_inches='tight')
     if plot_show:
@@ -573,18 +772,19 @@ def visualize_features(item: SARDatasetItem, plot_basemap: bool = False, plot_in
     center_point_proj = center_point_gdf.to_crs(crs=data_crs)
     fig, ax = plt.subplots(figsize=(18, 15))
 
-    legend_handles = []
+    feature_legend_handles = []
     # Set zorder for features to 1
     for feature_type, data in item.features.groupby("feature_type"):
         color = FEATURE_COLOR_MAP.get(feature_type, DEFAULT_COLOR)
         data.plot(ax=ax, color=color, label=feature_type.capitalize(), alpha=0.7, zorder=1)
-        legend_handles.append(Patch(color=color, label=feature_type.capitalize()))
+        feature_legend_handles.append(Patch(color=color, label=feature_type.capitalize()))
 
     if plot_basemap:
         # The basemap will have a zorder of 0 by default
         cx.add_basemap(ax, crs=item.features.crs.to_string(), source=cx.providers.OpenStreetMap.Mapnik)
     
     # Sample and plot lost person locations if requested
+    radii_legend_handles = []
     lost_person_gdf = None
     if num_lost_persons > 0:
         log.info(f"Generating {num_lost_persons} lost person locations...")
@@ -594,22 +794,32 @@ def visualize_features(item: SARDatasetItem, plot_basemap: bool = False, plot_in
         if locations:
             lost_person_gdf = gpd.GeoDataFrame(geometry=locations, crs=item.features.crs)
             lost_person_gdf.plot(ax=ax, marker='*', color='red', markersize=200, zorder=1, label="Lost Person")
-            legend_handles.append(plt.Line2D([0], [0], marker='*', color='w', markerfacecolor='red', markersize=15, label='Lost Person'))
+            radii_legend_handles.append(plt.Line2D([0], [0], marker='*', color='w', markerfacecolor='red', markersize=15, label='Lost Person'))
 
     colors = ["blue", "orange", "red", "green"]
-    labels = ["25th", "50th", "75th", "95th"]
+    labels = ["Small", "Medium", "Large", "Extra Large"]
     # Set zorder for rings to 2 to be on top of features
     for idx, r in enumerate(radii):
         circle = center_point_proj.buffer(r * 1000).iloc[0]
         color = colors[idx % len(colors)]
         gpd.GeoSeries([circle], crs=data_crs).boundary.plot(
             ax=ax, edgecolor=color, linestyle="--", linewidth=2, alpha=1, zorder=2)
-        label = f"Radius: {labels[idx]} ({r} km)"
-        legend_handles.append(
+        label = f"{labels[idx]} ({r} km)"
+        radii_legend_handles.append(
             Line2D([0], [0], color=color, lw=2.5, linestyle="--", label=label)
         )
 
-    ax.legend(handles=legend_handles, title="Legend", loc="upper left", fontsize=10, title_fontsize=12)
+    # Create two separate legends
+    # Features legend (upper left)
+    features_legend = ax.legend(handles=feature_legend_handles, title="Features", 
+                               loc="upper left", fontsize=16, title_fontsize=18)
+    
+    # Radii and lost person legend (upper right)
+    radii_legend = ax.legend(handles=radii_legend_handles, title="RoIs", 
+                            loc="upper right", fontsize=16, title_fontsize=18)
+    
+    # Add the features legend back since the second legend call removes the first
+    ax.add_artist(features_legend)
 
     if plot_inset:
         medium_radius_idx = 1
@@ -677,10 +887,10 @@ def visualize_features(item: SARDatasetItem, plot_basemap: bool = False, plot_in
         
     x_ticks = ax.get_xticks()
     y_ticks = ax.get_yticks()
-    ax.set_xticklabels([f"{x/1000:.1f}" for x in x_ticks])
-    ax.set_yticklabels([f"{y/1000:.1f}" for y in y_ticks])
-    ax.set_xlabel("Easting (km)")
-    ax.set_ylabel("Northing (km)")
+    ax.set_xticklabels([f"{x/1000:.1f}" for x in x_ticks], fontsize=18)
+    ax.set_yticklabels([f"{y/1000:.1f}" for y in y_ticks], fontsize=18)
+    ax.set_xlabel("Easting (km)", fontsize=22)
+    ax.set_ylabel("Northing (km)", fontsize=22)
 
     plt.tight_layout(rect=[0, 0, 0.85, 1])
     plt.savefig(f"features_{item.size}_circular_magnified_final.pdf", bbox_inches='tight')

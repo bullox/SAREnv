@@ -200,11 +200,11 @@ class ComparativeDatasetEvaluator:
     """
 
     def __init__(self,
-                 dataset_dirs=None,
-                 evaluation_sizes=None,
-                 num_drones=1,
+                 dataset_dirs,
+                 evaluation_sizes,
+                 num_drones,
+                 budget,
                  num_lost_persons=100,
-                 budget=100_000,
                  **kwargs):
         """
         Initializes the ComparativeDatasetEvaluator.
@@ -271,7 +271,7 @@ class ComparativeDatasetEvaluator:
     def evaluate(self, output_dir):
         """
         Evaluates all path generators across all datasets using ComparativeEvaluator instances.
-        Combines all data into DataFrames and saves them to files.
+        Saves results to CSV files immediately after each dataset evaluation to optimize memory usage.
 
         Args:
             output_dir (str): Directory to save the results files. Defaults to "results".
@@ -279,6 +279,19 @@ class ComparativeDatasetEvaluator:
         Returns:
             tuple: (metrics_df, time_series_df) - Combined DataFrames with all results
         """
+        # Create output directory if it doesn't exist
+        if output_dir is not None:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            
+            # Prepare file name suffix with number of drones and budget
+            suffix = f"_n{self.path_generator_config.num_drones}_budget{self.path_generator_config.budget}"
+            metrics_file = Path(output_dir) / f"comparative_metrics_results{suffix}.csv"
+            time_series_file = Path(output_dir) / f"comparative_time_series_results{suffix}.csv"
+            
+            # Initialize CSV files with headers
+            metrics_header_written = False
+            time_series_header_written = False
+        
         # Create a ComparativeEvaluator for each dataset
         self.evaluators = []
 
@@ -288,6 +301,7 @@ class ComparativeDatasetEvaluator:
                 dataset_directory=dataset_dir,
                 evaluation_sizes=self.evaluation_sizes,
                 num_lost_persons=self.num_victims,
+                budget=self.budget,  # Pass the budget from ComparativeDatasetEvaluator
                 path_generator_config=self.path_generator_config,
                 path_generators=self.path_generators,
                 # Pass num_drones from the config explicitly
@@ -303,14 +317,16 @@ class ComparativeDatasetEvaluator:
             if results_df.empty:
                 continue
 
-            # Store metrics results from ComparativeEvaluator
+            # Process metrics results and save immediately
+            dataset_metrics_results = []
             for _, row in results_df.iterrows():
                 # Convert the entire row to a dictionary and add dataset directory name
                 result_dict = row.to_dict()
                 result_dict["Dataset"] = Path(dataset_dir).name
-                self.metrics_results.append(result_dict)
+                dataset_metrics_results.append(result_dict)
 
-            # Process time-series data from ComparativeEvaluator and capture paths
+            # Process time-series data and save immediately
+            dataset_time_series_results = []
             for algorithm_name, time_series_list in time_series_data.items():
                 for i, time_series_data in enumerate(time_series_list):
                     # Process individual drone data
@@ -339,7 +355,7 @@ class ComparativeDatasetEvaluator:
                             # Calculate cumulative victims for this drone
                             drone_victims = per_drone_victims * (t + 1) / len(cumulative_likelihood) if len(cumulative_likelihood) > 0 else 0
 
-                            self.time_series_results.append({
+                            dataset_time_series_results.append({
                                 "Algorithm": algorithm_name,
                                 "Dataset": Path(dataset_dir).name,
                                 "Environment Size": environment_size,
@@ -352,18 +368,54 @@ class ComparativeDatasetEvaluator:
                                 "Path_Y": path_y,
                             })
 
-        # Create DataFrames from the collected results
+            # Save results immediately to CSV files
+            if output_dir is not None and dataset_metrics_results:
+                dataset_metrics_df = pd.DataFrame(dataset_metrics_results)
+                dataset_time_series_df = pd.DataFrame(dataset_time_series_results)
+                
+                # Save metrics results (append to existing file)
+                dataset_metrics_df.to_csv(metrics_file, mode='a', header=not metrics_header_written, index=False)
+                metrics_header_written = True
+                
+                # Save time-series results (append to existing file)
+                if not dataset_time_series_df.empty:
+                    dataset_time_series_df.to_csv(time_series_file, mode='a', header=not time_series_header_written, index=False)
+                    time_series_header_written = True
+                
+                log.info(f"Saved results for dataset {Path(dataset_dir).name} to CSV files")
+                
+                # Keep minimal results in memory for return values
+                self.metrics_results.extend(dataset_metrics_results)
+                self.time_series_results.extend(dataset_time_series_results)
+                
+                # Clear the dataset-specific results to free memory
+                del dataset_metrics_results
+                del dataset_time_series_results
+                del dataset_metrics_df
+                del dataset_time_series_df
+                
+                # Periodically clear memory to prevent accumulation
+                self._clear_memory()
+            else:
+                # If no output_dir specified, keep in memory
+                self.metrics_results.extend(dataset_metrics_results)
+                self.time_series_results.extend(dataset_time_series_results)
+
+        # Create final DataFrames from the collected results (minimal memory usage)
         metrics_df = pd.DataFrame(self.metrics_results)
         time_series_df = pd.DataFrame(self.time_series_results)
 
         if output_dir is not None:
-            self.save_results(metrics_df, time_series_df, output_dir)
+            log.info("All results saved to:")
+            log.info(f"  Metrics: {metrics_file}")
+            log.info(f"  Time series: {time_series_file}")
 
         return metrics_df, time_series_df
 
     def save_results(self, metrics_df: pd.DataFrame, time_series_df: pd.DataFrame, output_dir: str = "results"):
         """
         Save the metrics, time-series, and paths results to CSV files.
+        Note: This method is kept for backward compatibility, but evaluation now saves results incrementally.
 
         Args:
             metrics_df (pd.DataFrame): DataFrame containing metrics results
@@ -373,17 +425,20 @@ class ComparativeDatasetEvaluator:
         # Create output directory if it doesn't exist
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+        # Prepare file name suffix with number of drones and budget
+        suffix = f"_n{self.path_generator_config.num_drones}_budget{self.path_generator_config.budget}"
+
         # Save metrics results
-        metrics_file = Path(output_dir) / "comparative_metrics_results.csv"
+        metrics_file = Path(output_dir) / f"comparative_metrics_results{suffix}.csv"
         metrics_df.to_csv(metrics_file, index=False)
         log.info(f"Saved metrics results to: {metrics_file}")
 
         # Save time-series results
-        time_series_file = Path(output_dir) / "comparative_time_series_results.csv"
+        time_series_file = Path(output_dir) / f"comparative_time_series_results{suffix}.csv"
         time_series_df.to_csv(time_series_file, index=False)
         log.info(f"Saved time-series results to: {time_series_file}")
 
-        # Save paths results
+        log.info("Note: Results are now saved incrementally during evaluation for better memory efficiency.")
 
     def get_metrics_results(self) -> pd.DataFrame:
         """
@@ -429,6 +484,17 @@ class ComparativeDatasetEvaluator:
             Mean_Path_Length=('Total Path Length (km)', 'mean'),
             CI_Path_Length=('Total Path Length (km)', lambda x: 1.96 * x.sem()),
         ).reset_index()
+
+    def _clear_memory(self):
+        """
+        Clear stored results from memory to optimize memory usage.
+        This is called internally during evaluation to free up memory.
+        """
+        # Clear the in-memory results but keep a small subset for return values
+        if len(self.metrics_results) > 1000:  # Keep only last 1000 results
+            self.metrics_results = self.metrics_results[-1000:]
+        if len(self.time_series_results) > 10000:  # Keep only last 10000 results
+            self.time_series_results = self.time_series_results[-10000:]
 
 
 class ComparativeEvaluator:
@@ -594,6 +660,7 @@ class ComparativeEvaluator:
                     "Climate": item.environment_climate,
                     "Environment Size": size,
                     "n_agents": self.path_generator_config.num_drones,
+                    "Budget (m)": self.path_generator_config.budget,
                     "Likelihood Score": all_metrics['total_likelihood_score'],
                     "Time-Discounted Score": all_metrics['total_time_discounted_score'],
                     "Victims Found (%)": victim_metrics['percentage_found'],

@@ -151,14 +151,14 @@ def run_export_example():
 
     # 1. Initialize the generator.
     data_gen = DataGenerator()
-
+    
     # 2. Define a center point and an output directory for the dataset.
-    svanninge_bakker = 10.289470, 55.145921
+    initial_planning_point = 10.289470, 55.145921
     output_dir = "sarenv_dataset"
 
     # 3. Run the main export function.
     data_gen.export_dataset(
-        center_point=svanninge_bakker,
+        center_point=initial_planning_point,
         output_directory=output_dir,
         environment_climate=CLIMATE_TEMPERATE,
         environment_type=ENVIRONMENT_TYPE_FLAT,

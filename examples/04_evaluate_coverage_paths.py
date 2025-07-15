@@ -12,29 +12,28 @@ log = sarenv.get_logger()
 
 if __name__ == "__main__":
     log.info("--- Initializing the Search and Rescue Toolkit ---")
-    data_dir = "sarenv_dataset/1"  # Path to the dataset directory
+    data_dir = "sarenv_dataset/19"  # Path to the dataset directory
 
     # 1. Initialize the evaluator
     evaluator = ComparativeEvaluator(
         dataset_directory=data_dir,
-        evaluation_sizes=["medium"], # Use a single size for a quick test
-        num_drones=5,
+        evaluation_sizes=[ "medium"],
+        num_drones=3,
         num_lost_persons=100,
-        budget=150_000
+        budget=350000,
     )
 
     # 2. Run the evaluations
-    baseline_results = evaluator.run_baseline_evaluations()
+    baseline_results, time_series_data = evaluator.run_baseline_evaluations()
 
     # 3. Plot the results from the baseline run
-    if baseline_results is not None and not baseline_results.empty:
-        evaluator.plot_results(baseline_results)
+    evaluator.plot_results(baseline_results)
 
     # 4. Plot paths on heatmaps for each algorithm and dataset
     log.info("--- Generating Path Heatmap Visualizations ---")
 
     # Create output directory for heatmap plots
-    output_dir = Path("graphs/heatmap_plots")
+    output_dir = Path()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Iterate through each environment and algorithm to generate plots
@@ -81,7 +80,6 @@ if __name__ == "__main__":
             # Plot the heatmap with paths
             plot.plot_heatmap(
                 item=item,
-                victims_gdf=victims_gdf,
                 generated_paths=generated_paths,
                 name=name,
                 x_min=x_min,
@@ -92,5 +90,4 @@ if __name__ == "__main__":
             )
 
             log.info(f"Saved heatmap plot: {output_file}")
-
     log.info("--- Path Heatmap Visualization Complete ---")

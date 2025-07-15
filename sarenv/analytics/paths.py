@@ -101,13 +101,13 @@ def generate_greedy_path(center_x: float, center_y: float, num_drones: int, prob
         return [LineString() for _ in range(num_drones)]
 
     # Extract view model parameters
-    fov_deg = kwargs.get('fov_deg', 45.0)
-    altitude = kwargs.get('altitude', 80.0)
+    fov_deg = kwargs.get('fov_deg')
+    altitude = kwargs.get('altitude')
     detection_radius = altitude * np.tan(np.radians(fov_deg / 2))
 
     # Pre-compute coordinate mappings for efficiency
     dx = (maxx - minx) / width
-    dy = (maxy - miny) / height
+    dy = ((maxy - miny) / height )
     x_offset = minx + dx / 2
     y_offset = miny + dy / 2
 
