@@ -28,6 +28,7 @@ import cv2
 import sarenv
 from sarenv.analytics import metrics
 from sarenv.analytics.evaluator import ComparativeEvaluator
+from sarenv.utils.plot import setup_algorithm_plot, plot_drone_paths, plot_current_drone_positions, create_time_series_graphs
 
 log = sarenv.get_logger()
 
@@ -35,28 +36,29 @@ log = sarenv.get_logger()
 class ComparativeCoverageVideoGenerator:
     """Generates a comparative video showing 4 algorithms side by side with time-series graphs."""
     
-    def __init__(self, item, victims_gdf, path_evaluator, crs, output_dir, n_frames=200):
+    def __init__(self, item, victims_gdf, path_evaluator, crs, output_dir, interval_distance=2500.0):
         self.item = item
         self.victims_gdf = victims_gdf
         self.path_evaluator = path_evaluator
         self.crs = crs
         self.output_dir = Path(output_dir)
+        self.interval_distance = interval_distance  # Distance in meters between calculations
         
         # Video settings
         self.fps = 2  # Frames per second
         self.dpi = 100
         self.figsize = (20, 12)  # Large figure for 2x2 + graphs
-        self.n_frames = n_frames
+        self.n_frames = None  # Will be determined by the path lengths and interval distance
         
         # Define colors for multiple drones
         self.drone_colors = ['blue', 'green', 'gray', 'purple', 'orange']
         
         # Algorithm names and colors for graphs
         self.algorithm_colors = {
+            'RandomWalk': 'orange',
+            'Greedy': 'green', 
             'Concentric': 'blue',
-            'Pizza': 'red', 
-            'Greedy': 'green',
-            'RandomWalk': 'orange'
+            'Pizza': 'red'
         }
     
     def create_comparative_video(self, algorithms_data):
@@ -136,10 +138,10 @@ class ComparativeCoverageVideoGenerator:
             
             # Algorithm subplot positions
             ax_positions = {
-                'Concentric': (0, 0, 3, 2),
-                'Pizza': (0, 2, 3, 2),
-                'Greedy': (3, 0, 3, 2),
-                'RandomWalk': (3, 2, 3, 2)
+                'RandomWalk': (0, 0, 3, 2),
+                'Greedy': (0, 2, 3, 2),
+                'Concentric': (3, 0, 3, 2),
+                'Pizza': (3, 2, 3, 2)
             }
             
             algorithm_axes = {}
@@ -172,13 +174,12 @@ class ComparativeCoverageVideoGenerator:
         start_time = time.time()
         log.info(f"Preparing animation data for {algorithm_name} with {len(paths)} paths.")
         
-        # Use path evaluator to pre-compute metrics at regular distance intervals
-        interval_distance = 5000.0  # meters between calculations
-        log.info(f"Pre-computing metrics every {interval_distance}m...")
+        # Use the configured interval distance
+        log.info(f"Pre-computing metrics every {self.interval_distance}m...")
         
         try:
             precomputed_data = self.path_evaluator.calculate_metrics_at_distance_intervals(
-                paths, discount_factor=0.999, interval_distance=interval_distance
+                paths, discount_factor=0.999, interval_distance=self.interval_distance
             )
             
             if not precomputed_data.get('interval_metrics'):
@@ -199,11 +200,16 @@ class ComparativeCoverageVideoGenerator:
             all_drone_positions = []
             all_metrics = []
             all_path_coordinates = []  # Store path coordinates for natural rendering
+            all_interval_distances = []  # Store the actual interval distances (2.5km steps)
             
             for frame_idx in range(self.n_frames):
                 # Map frame to interval (linear interpolation)
                 interval_idx = int((frame_idx / max(1, self.n_frames - 1)) * max(1, total_intervals - 1))
                 interval_idx = min(interval_idx, total_intervals - 1)
+                
+                # Store the actual interval distance (in km)
+                interval_distance_km = interval_idx * (self.interval_distance / 1000.0)  # Convert meters to km
+                all_interval_distances.append(interval_distance_km)
                 
                 # Get positions for this interval
                 if interval_idx < len(interval_positions):
@@ -249,129 +255,21 @@ class ComparativeCoverageVideoGenerator:
                 'drone_positions': all_drone_positions,
                 'path_coordinates': all_path_coordinates,  # Natural path coordinates for rendering
                 'metrics': all_metrics,
+                'interval_distances': all_interval_distances,  # Store interval distances in km
                 'num_drones': num_drones
             }
             
         except Exception as e:
             log.error(f"Error in animation data preparation for {algorithm_name}: {e}")
-            return {'positions': [], 'drone_positions': [], 'path_coordinates': [], 'metrics': [], 'num_drones': 0}
+            return {'positions': [], 'drone_positions': [], 'path_coordinates': [], 'metrics': [], 'interval_distances': [], 'num_drones': 0}
 
-    def _setup_algorithm_plot(self, ax, algorithm_name):
-        """Set up the base plot for an algorithm visualization."""
-        try:
-            x_min, y_min, x_max, y_max = self.item.bounds
-            extent = [x_min, x_max, y_min, y_max]
-
-            # Display heatmap
-            ax.imshow(
-                self.item.heatmap, 
-                extent=extent, 
-                origin='lower',
-                cmap='YlOrRd',
-                alpha=0.8,
-                aspect='equal'
-            )
-
-            # Plot victims if available
-            if not self.victims_gdf.empty:
-                victims_proj = self.victims_gdf.to_crs(self.crs)
-                ax.scatter(
-                    victims_proj.geometry.x, 
-                    victims_proj.geometry.y,
-                    c='black', s=30, marker='X', linewidths=1,
-                    zorder=10, edgecolors='darkred'
-                )
-
-            ax.set_xlim(x_min, x_max)
-            ax.set_ylim(y_min, y_max)
-            ax.set_title(f'{algorithm_name}', fontsize=12, fontweight='bold')
-            ax.grid(True, alpha=0.3)
-
-            # Remove axis labels for cleaner look
-            ax.set_xticks([])
-            ax.set_yticks([])
-            
-        except Exception as e:
-            log.warning(f"Error setting up plot for {algorithm_name}: {e}")
-            ax.set_title(f'{algorithm_name} (Error)', fontsize=12)
-    
-    def _plot_drone_paths(self, ax, animation_data, frame_idx):
-        """Plot drone paths up to the current frame using natural path coordinates."""
-        try:
-            num_drones = animation_data.get('num_drones', 1)
-            path_coordinates = animation_data.get('path_coordinates', [])
-            
-            # If we have natural path coordinates, use them for smooth rendering
-            if path_coordinates and frame_idx < len(path_coordinates):
-                current_frame_coords = path_coordinates[frame_idx]
-                
-                for drone_idx in range(min(num_drones, len(current_frame_coords))):
-                    drone_path_coords = current_frame_coords[drone_idx]
-                    
-                    if len(drone_path_coords) > 1:
-                        # Extract x and y coordinates
-                        drone_path_x = [coord[0] for coord in drone_path_coords]
-                        drone_path_y = [coord[1] for coord in drone_path_coords]
-                        
-                        # Plot the natural path
-                        drone_color = self.drone_colors[drone_idx % len(self.drone_colors)]
-                        ax.plot(drone_path_x, drone_path_y, color=drone_color, 
-                               linewidth=2, alpha=0.8, zorder=5)
-            else:
-                # Fallback to the original method if no path coordinates available
-                for drone_idx in range(num_drones):
-                    drone_path_x = []
-                    drone_path_y = []
-                    
-                    # Collect path points up to current frame
-                    for past_frame in range(min(frame_idx + 1, len(animation_data['drone_positions']))):
-                        if drone_idx < len(animation_data['drone_positions'][past_frame]):
-                            pos = animation_data['drone_positions'][past_frame][drone_idx]
-                            if pos is not None and len(pos) >= 2:
-                                drone_path_x.append(pos[0])
-                                drone_path_y.append(pos[1])
-                    
-                    # Plot path if we have enough points
-                    if len(drone_path_x) > 1:
-                        drone_color = self.drone_colors[drone_idx % len(self.drone_colors)]
-                        ax.plot(drone_path_x, drone_path_y, color=drone_color, 
-                               linewidth=2, alpha=0.8, zorder=5)
-        except Exception as e:
-            log.warning(f"Error plotting drone paths: {e}")
-    
-    def _plot_current_drone_positions(self, ax, current_drone_positions):
-        """Plot current drone positions with detection circles."""
-        try:
-            for drone_idx, drone_position in enumerate(current_drone_positions):
-                if drone_position is not None and len(drone_position) >= 2:
-                    drone_color = self.drone_colors[drone_idx % len(self.drone_colors)]
-                    
-                    # Add detection circle
-                    detection_circle = plt.Circle(
-                        (drone_position[0], drone_position[1]), 
-                        self.path_evaluator.detection_radius, 
-                        fill=False, color=drone_color, alpha=0.3, 
-                        linewidth=1, linestyle='--', zorder=8
-                    )
-                    ax.add_patch(detection_circle)
-                    
-                    # Add drone marker
-                    ax.scatter(
-                        drone_position[0], drone_position[1], 
-                        c=drone_color, s=100, marker='o', 
-                        edgecolors='white', linewidths=2, zorder=15
-                    )
-                    
-        except Exception as e:
-            log.warning(f"Error plotting current drone positions: {e}")
-            
     def _create_comparative_frame(self, frame_idx, all_animation_data, algorithm_axes, 
                                   ax_area, ax_score, ax_victims):
         """Create a single comparative frame with all algorithm visualizations."""
         try:
             # Plot each algorithm
             for alg_name, ax in algorithm_axes.items():
-                self._setup_algorithm_plot(ax, alg_name)
+                setup_algorithm_plot(ax, self.item, self.victims_gdf, self.crs, alg_name, self.algorithm_colors)
                 
                 if alg_name in all_animation_data:
                     animation_data = all_animation_data[alg_name]
@@ -379,70 +277,15 @@ class ComparativeCoverageVideoGenerator:
                         current_drone_positions = animation_data['drone_positions'][frame_idx]
                         
                         # Plot drone paths and current positions using efficient method
-                        self._plot_drone_paths(ax, animation_data, frame_idx)
-                        self._plot_current_drone_positions(ax, current_drone_positions)
+                        plot_drone_paths(ax, animation_data, frame_idx, self.drone_colors)
+                        plot_current_drone_positions(ax, current_drone_positions, self.drone_colors, self.path_evaluator.detection_radius)
 
             # Create time-series graphs
-            self._create_time_series_graphs(frame_idx, all_animation_data, ax_area, ax_score, ax_victims)
+            create_time_series_graphs(frame_idx, all_animation_data, ax_area, ax_score, ax_victims, 
+                                    self.algorithm_colors, self.interval_distance / 1000.0)
             
         except Exception as e:
             log.warning(f"Error creating comparative frame {frame_idx}: {e}")
-    
-    def _create_time_series_graphs(self, frame_idx, all_animation_data, ax_area, ax_score, ax_victims):
-        """Create time-series graphs showing metrics evolution."""
-        try:
-            # Clear previous plots
-            for ax in [ax_area, ax_score, ax_victims]:
-                ax.clear()
-            
-            # Plot metrics for each algorithm
-            for alg_name, animation_data in all_animation_data.items():
-                if frame_idx < len(animation_data['metrics']):
-                    color = self.algorithm_colors.get(alg_name, 'black')
-                    frames_so_far = min(frame_idx + 1, len(animation_data['metrics']))
-                    time_steps = list(range(frames_so_far))
-                    
-                    # Extract metrics data
-                    scores = [animation_data['metrics'][i]['likelihood_score'] for i in range(frames_so_far)]
-                    victims = [animation_data['metrics'][i]['victims_found_pct'] for i in range(frames_so_far)]
-                    areas = [animation_data['metrics'][i]['area_covered'] for i in range(frames_so_far)]
-                    
-                    # Plot with error handling
-                    try:
-                        ax_area.plot(time_steps, areas, color=color, linewidth=2, label=alg_name)
-                        ax_score.plot(time_steps, scores, color=color, linewidth=2, label=alg_name)
-                        ax_victims.plot(time_steps, victims, color=color, linewidth=2, label=alg_name)
-                    except Exception as e:
-                        log.warning(f"Error plotting metrics for {alg_name}: {e}")
-            
-            # Configure axes
-            max_frames = self.n_frames
-            
-            for ax, title, ylabel in [
-                (ax_area, 'Area Covered', 'Area (km²)'),
-                (ax_score, 'Likelihood Score', 'Score'),
-                (ax_victims, 'Victims Found', 'Percentage (%)')
-            ]:
-                try:
-                    ax.set_xlim(0, max_frames)
-                    ax.set_title(title, fontsize=10, fontweight='bold')
-                    ax.set_ylabel(ylabel, fontsize=9)
-                    ax.grid(True, alpha=0.3)
-                    ax.legend(fontsize=8, loc='best')
-                    
-                    if ax != ax_victims:
-                        ax.set_xticklabels([])
-                    else:
-                        ax.set_xlabel('Time Steps', fontsize=9)
-                        
-                    # Set reasonable y-limits based on data
-                    if ax == ax_victims:
-                        ax.set_ylim(0, 100)  # Percentage
-                except Exception as e:
-                    log.warning(f"Error configuring axis {title}: {e}")
-                    
-        except Exception as e:
-            log.warning(f"Error creating time series graphs: {e}")
 
 
 
@@ -452,7 +295,7 @@ if __name__ == "__main__":
     # Configuration
     data_dir = "sarenv_dataset/19"
     output_dir = Path("coverage_videos")
-    n_frames = 100  # Number of frames for the video
+    interval_distance = 1000.0  # Distance in meters between metric calculations (determines video granularity)
     
     try:
         # Initialize evaluator
@@ -526,7 +369,7 @@ if __name__ == "__main__":
         log.info("Creating video generator...")
         video_generator = ComparativeCoverageVideoGenerator(
             item, victims_gdf, path_evaluator, env_data["crs"], output_dir, 
-            n_frames=n_frames
+            interval_distance=interval_distance
         )
         
         log.info("Generating comparative coverage video...")

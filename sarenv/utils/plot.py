@@ -628,6 +628,191 @@ def create_individual_metric_plots(df_or_files, environment_size, output_dir="pl
 
         plt.close()  # Close the figure to free memory
 
+# === COMPARATIVE VIDEO PLOTTING FUNCTIONS ===
+
+def setup_algorithm_plot(ax, item, victims_gdf, crs, algorithm_name, algorithm_colors):
+    """Set up the base plot for an algorithm visualization in comparative video."""
+    try:
+        x_min, y_min, x_max, y_max = item.bounds
+        extent = [x_min, x_max, y_min, y_max]
+
+        # Display heatmap
+        ax.imshow(
+            item.heatmap, 
+            extent=extent, 
+            origin='lower',
+            cmap='YlOrRd',
+            alpha=0.8,
+            aspect='equal'
+        )
+
+        # Plot victims if available
+        if not victims_gdf.empty:
+            victims_proj = victims_gdf.to_crs(crs)
+            ax.scatter(
+                victims_proj.geometry.x, 
+                victims_proj.geometry.y,
+                c='black', s=30, marker='X', linewidths=1,
+                zorder=10, edgecolors='darkred'
+            )
+
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        title_color = algorithm_colors.get(algorithm_name, 'black')
+        ax.set_title(f'{algorithm_name}', fontsize=12, fontweight='bold', color=title_color)
+        ax.grid(True, alpha=0.3)
+
+        # Remove axis labels for cleaner look
+        ax.set_xticks([])
+        ax.set_yticks([])
+        
+    except Exception as e:
+        log.warning(f"Error setting up plot for {algorithm_name}: {e}")
+        ax.set_title(f'{algorithm_name} (Error)', fontsize=12)
+
+
+def plot_drone_paths(ax, animation_data, frame_idx, drone_colors):
+    """Plot drone paths up to the current frame using natural path coordinates."""
+    try:
+        num_drones = animation_data.get('num_drones', 1)
+        path_coordinates = animation_data.get('path_coordinates', [])
+        
+        # If we have natural path coordinates, use them for smooth rendering
+        if path_coordinates and frame_idx < len(path_coordinates):
+            current_frame_coords = path_coordinates[frame_idx]
+            
+            for drone_idx in range(min(num_drones, len(current_frame_coords))):
+                drone_path_coords = current_frame_coords[drone_idx]
+                
+                if len(drone_path_coords) > 1:
+                    # Extract x and y coordinates
+                    drone_path_x = [coord[0] for coord in drone_path_coords]
+                    drone_path_y = [coord[1] for coord in drone_path_coords]
+                    
+                    # Plot the natural path
+                    drone_color = drone_colors[drone_idx % len(drone_colors)]
+                    ax.plot(drone_path_x, drone_path_y, color=drone_color, 
+                           linewidth=2, alpha=0.8, zorder=5)
+        else:
+            # Fallback to the original method if no path coordinates available
+            for drone_idx in range(num_drones):
+                drone_path_x = []
+                drone_path_y = []
+                
+                # Collect path points up to current frame
+                for past_frame in range(min(frame_idx + 1, len(animation_data['drone_positions']))):
+                    if drone_idx < len(animation_data['drone_positions'][past_frame]):
+                        pos = animation_data['drone_positions'][past_frame][drone_idx]
+                        if pos is not None and len(pos) >= 2:
+                            drone_path_x.append(pos[0])
+                            drone_path_y.append(pos[1])
+                
+                # Plot path if we have enough points
+                if len(drone_path_x) > 1:
+                    drone_color = drone_colors[drone_idx % len(drone_colors)]
+                    ax.plot(drone_path_x, drone_path_y, color=drone_color, 
+                           linewidth=2, alpha=0.8, zorder=5)
+    except Exception as e:
+        log.warning(f"Error plotting drone paths: {e}")
+
+
+def plot_current_drone_positions(ax, current_drone_positions, drone_colors, detection_radius):
+    """Plot current drone positions with detection circles."""
+    try:
+        for drone_idx, drone_position in enumerate(current_drone_positions):
+            if drone_position is not None and len(drone_position) >= 2:
+                drone_color = drone_colors[drone_idx % len(drone_colors)]
+                
+                # Add detection circle
+                detection_circle = plt.Circle(
+                    (drone_position[0], drone_position[1]), 
+                    detection_radius, 
+                    fill=False, color=drone_color, alpha=0.3, 
+                    linewidth=1, linestyle='--', zorder=8
+                )
+                ax.add_patch(detection_circle)
+                
+                # Add drone marker
+                ax.scatter(
+                    drone_position[0], drone_position[1], 
+                    c=drone_color, s=100, marker='o', 
+                    edgecolors='white', linewidths=2, zorder=15
+                )
+                
+    except Exception as e:
+        log.warning(f"Error plotting current drone positions: {e}")
+
+
+def create_time_series_graphs(frame_idx, all_animation_data, ax_area, ax_score, ax_victims, algorithm_colors, interval_distance_km=2.5):
+    """Create time-series graphs showing metrics evolution."""
+    try:
+        # Clear previous plots
+        for ax in [ax_area, ax_score, ax_victims]:
+            ax.clear()
+        
+        # Track maximum distance for x-axis scaling
+        max_distance = 0
+        
+        # Plot metrics for each algorithm
+        for alg_name, animation_data in all_animation_data.items():
+            if frame_idx < len(animation_data['metrics']):
+                color = algorithm_colors.get(alg_name, 'black')
+                frames_so_far = min(frame_idx + 1, len(animation_data['metrics']))
+                
+                # Extract metrics data and use interval distances
+                scores = [animation_data['metrics'][i]['likelihood_score'] for i in range(frames_so_far)]
+                victims = [animation_data['metrics'][i]['victims_found_pct'] for i in range(frames_so_far)]
+                areas = [animation_data['metrics'][i]['area_covered'] for i in range(frames_so_far)]
+                
+                # Use the correct interval distances
+                if 'interval_distances' in animation_data and len(animation_data['interval_distances']) >= frames_so_far:
+                    distances = animation_data['interval_distances'][:frames_so_far]
+                else:
+                    # Fallback: calculate distances based on the provided interval distance
+                    distances = [i * interval_distance_km for i in range(frames_so_far)]
+                
+                # Update maximum distance for axis scaling
+                if distances:
+                    max_distance = max(max_distance, max(distances))
+                
+                # Plot with error handling
+                try:
+                    ax_area.plot(distances, areas, color=color, linewidth=2, label=alg_name)
+                    ax_score.plot(distances, scores, color=color, linewidth=2, label=alg_name)
+                    ax_victims.plot(distances, victims, color=color, linewidth=2, label=alg_name)
+                except Exception as e:
+                    log.warning(f"Error plotting metrics for {alg_name}: {e}")
+        
+        # Configure axes
+        max_distance = max(max_distance, 1)  # Ensure minimum distance of 1 km for scaling
+        
+        for ax, title, ylabel in [
+            (ax_area, 'Area Covered', 'Area (km²)'),
+            (ax_score, 'Likelihood Score', 'Score'),
+            (ax_victims, 'Victims Found', 'Percentage (%)')
+        ]:
+            try:
+                ax.set_xlim(0, max_distance * 1.1)  # Add 10% padding
+                ax.set_title(title, fontsize=10, fontweight='bold')
+                ax.set_ylabel(ylabel, fontsize=9)
+                ax.grid(True, alpha=0.3)
+                ax.legend(fontsize=8, loc='best')
+                
+                if ax != ax_victims:
+                    ax.set_xticklabels([])
+                else:
+                    ax.set_xlabel('Distance Traversed (km)', fontsize=9)
+                    
+                # Set reasonable y-limits based on data
+                if ax == ax_victims:
+                    ax.set_ylim(0, 100)  # Percentage
+            except Exception as e:
+                log.warning(f"Error configuring axis {title}: {e}")
+                
+    except Exception as e:
+        log.warning(f"Error creating time series graphs: {e}")
+
+
 # === EXISTING PLOTTING FUNCTIONS ===
 
 def visualize_heatmap_matplotlib(item: SARDatasetItem, data_crs: str, plot_basemap: bool = True):
