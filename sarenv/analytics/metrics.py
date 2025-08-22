@@ -5,7 +5,7 @@ Provides the PathEvaluator class to score coverage paths against various metrics
 import geopandas as gpd
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 from shapely.ops import unary_union
 
 class PathEvaluator:
@@ -313,3 +313,285 @@ class PathEvaluator:
                 total_score += self.heatmap[row, col]
         
         return total_score
+
+    def calculate_metrics_at_distance_intervals(self, paths: list[LineString], discount_factor: float = 0.999, 
+                                               interval_distance: float = 500.0) -> dict:
+        """
+        Efficiently calculate metrics at regular distance intervals along paths for animation purposes.
+        This computes metrics every N meters along the path instead of every N positions.
+        
+        Args:
+            paths (list[LineString]): List of drone paths
+            discount_factor (float): Discount factor for time-based scoring
+            interval_distance (float): Distance in meters between metric calculations
+            
+        Returns:
+            dict: Contains precomputed metrics at regular distance intervals:
+                - 'interval_metrics': List of metric dicts for each interval
+                - 'interval_distances': List of cumulative distances for each interval
+                - 'interval_positions': List of drone positions for each interval
+                - 'total_intervals': Total number of intervals computed
+        """
+        # Flatten paths if they are nested (e.g., list of lists of LineStrings)
+        flat_paths = []
+        for item in paths:
+            if isinstance(item, list):
+                flat_paths.extend(item)
+            else:
+                flat_paths.append(item)
+        
+        valid_paths = [p for p in flat_paths if hasattr(p, 'is_empty') and not p.is_empty and p.length > 0]
+        if not valid_paths:
+            return {
+                'interval_metrics': [],
+                'interval_distances': [],
+                'interval_positions': [],
+                'total_intervals': 0
+            }
+        
+        # Calculate maximum path length to determine total intervals needed
+        max_path_length = max(path.length for path in valid_paths)
+        total_intervals = int(np.ceil(max_path_length / interval_distance)) + 1
+        
+        interval_metrics = []
+        interval_distances = []
+        interval_position_list = []
+        
+        # Pre-compute path segments for efficiency based on distance
+        path_segments = []
+        path_coordinates = []  # Store all coordinates for natural path rendering
+        for path_idx, path in enumerate(valid_paths):
+            segments = []
+            coordinates = []
+            for i in range(total_intervals):
+                distance_along_path = i * interval_distance
+                
+                if distance_along_path <= path.length:
+                    # Get the position at this distance along the path
+                    point = path.interpolate(distance_along_path)
+                    point_coords = (point.x, point.y)
+                    
+                    # Create partial path up to this distance
+                    if distance_along_path == 0:
+                        # For the starting point, create a minimal path
+                        start_point = path.interpolate(0)
+                        partial_path = LineString([start_point.coords[0], start_point.coords[0]])
+                        # Store just the starting point
+                        path_coords_up_to_here = [start_point.coords[0]]
+                    else:
+                        # Create path from start to current distance with detailed points
+                        num_points = max(10, int(distance_along_path / 50))  # Point every 50m for smooth rendering
+                        distances = np.linspace(0, distance_along_path, num_points)
+                        points = [path.interpolate(d) for d in distances]
+                        partial_path = LineString([(p.x, p.y) for p in points])
+                        # Store all coordinates up to this point for natural path rendering
+                        path_coords_up_to_here = [(p.x, p.y) for p in points]
+                else:
+                    # Use full path if we've exceeded its length
+                    partial_path = path
+                    end_point = path.interpolate(path.length)
+                    point_coords = (end_point.x, end_point.y)
+                    distance_along_path = path.length
+                    # Store all coordinates of the full path
+                    path_coords_up_to_here = list(path.coords)
+                
+                segments.append({
+                    'distance': distance_along_path,
+                    'position': point_coords,
+                    'partial_path': partial_path
+                })
+                coordinates.append(path_coords_up_to_here)
+            path_segments.append(segments)
+            path_coordinates.append(coordinates)
+        
+        # Calculate metrics for each distance interval
+        for interval_idx in range(total_intervals):
+            # Get partial paths up to this distance interval
+            partial_paths = []
+            positions = []
+            path_coords_for_interval = []
+            
+            for drone_idx, (segments, coordinates) in enumerate(zip(path_segments, path_coordinates)):
+                if interval_idx < len(segments):
+                    partial_paths.append(segments[interval_idx]['partial_path'])
+                    positions.append(segments[interval_idx]['position'])
+                    path_coords_for_interval.append(coordinates[interval_idx])
+                else:
+                    # Use the last available segment (full path)
+                    partial_paths.append(segments[-1]['partial_path'])
+                    positions.append(segments[-1]['position'])
+                    path_coords_for_interval.append(coordinates[-1])
+            
+            # Store path coordinates for this interval for natural rendering
+            interval_position_list.append(positions)
+            
+            # Calculate metrics for this distance interval
+            try:
+                metrics_result = self.calculate_all_metrics(partial_paths, discount_factor)
+                interval_metrics.append({
+                    'area_covered': metrics_result.get('area_covered', 0),
+                    'likelihood_score': metrics_result.get('total_likelihood_score', 0),
+                    'victims_found_pct': metrics_result.get('victim_detection_metrics', {}).get('percentage_found', 0),
+                    'total_path_length': metrics_result.get('total_path_length', 0),
+                    'time_discounted_score': metrics_result.get('total_time_discounted_score', 0)
+                })
+            except Exception as e:
+                # Use previous metrics or defaults if calculation fails
+                if interval_metrics:
+                    interval_metrics.append(interval_metrics[-1].copy())
+                else:
+                    interval_metrics.append({
+                        'area_covered': 0, 'likelihood_score': 0, 'victims_found_pct': 0,
+                        'total_path_length': 0, 'time_discounted_score': 0
+                    })
+            
+            # Use the actual distance for this interval
+            current_distance = interval_idx * interval_distance
+            interval_distances.append(current_distance)
+        
+        return {
+            'interval_metrics': interval_metrics,
+            'interval_distances': interval_distances,
+            'interval_positions': interval_position_list,
+            'interval_path_coordinates': path_coordinates,  # All path coordinates for natural rendering
+            'total_intervals': total_intervals,
+            'interval_distance_step': interval_distance
+        }
+
+    def calculate_metrics_at_intervals(self, paths: list[LineString], discount_factor: float = 0.999, 
+                                     interval_positions: int = 100) -> dict:
+        """
+        Efficiently calculate metrics at regular position intervals along paths for animation purposes.
+        This is much faster than recalculating full metrics for every frame.
+        
+        Args:
+            paths (list[LineString]): List of drone paths
+            discount_factor (float): Discount factor for time-based scoring
+            interval_positions (int): Number of positions between metric calculations
+            
+        Returns:
+            dict: Contains precomputed metrics at regular intervals:
+                - 'interval_metrics': List of metric dicts for each interval
+                - 'interval_distances': List of cumulative distances for each interval
+                - 'interval_positions': List of drone positions for each interval
+                - 'total_intervals': Total number of intervals computed
+        """
+        # Flatten paths if they are nested (e.g., list of lists of LineStrings)
+        flat_paths = []
+        for item in paths:
+            if isinstance(item, list):
+                flat_paths.extend(item)
+            else:
+                flat_paths.append(item)
+        
+        valid_paths = [p for p in flat_paths if hasattr(p, 'is_empty') and not p.is_empty and p.length > 0]
+        if not valid_paths:
+            return {
+                'interval_metrics': [],
+                'interval_distances': [],
+                'interval_positions': [],
+                'total_intervals': 0
+            }
+        
+        # Calculate maximum number of positions to determine total intervals needed
+        max_positions = 0
+        path_coords = []
+        for path in valid_paths:
+            coords = list(path.coords)
+            path_coords.append(coords)
+            if isinstance(coords, list) and len(coords) > 0:
+                max_positions = max(max_positions, len(coords))
+        
+        total_intervals = int(np.ceil(max_positions / interval_positions)) + 1
+        
+        interval_metrics = []
+        interval_distances = []
+        interval_position_list = []  # Renamed to avoid collision with parameter
+        
+        # Pre-compute path segments for efficiency
+        path_segments = []
+        for path_idx, (path, coords) in enumerate(zip(valid_paths, path_coords)):
+            segments = []
+            for i in range(total_intervals):
+                position_idx = min(i * interval_positions, len(coords) - 1)
+                
+                if position_idx < len(coords):
+                    # Get the actual position from coordinates
+                    point_coords = coords[position_idx]
+                    
+                    # Create partial path up to this position
+                    if position_idx == 0:
+                        partial_path = LineString([coords[0], coords[0]])
+                    else:
+                        # Use coordinates up to this position index
+                        partial_coords = coords[:position_idx + 1]
+                        partial_path = LineString(partial_coords) if len(partial_coords) > 1 else LineString([partial_coords[0], partial_coords[0]])
+                    
+                    # Calculate distance along path
+                    if position_idx == 0:
+                        distance = 0
+                    else:
+                        temp_path = LineString(coords[:position_idx + 1])
+                        distance = temp_path.length
+                else:
+                    # Use full path if we've exceeded its length
+                    partial_path = path
+                    point_coords = coords[-1]
+                    distance = path.length
+                
+                segments.append({
+                    'distance': distance,
+                    'position': point_coords,
+                    'partial_path': partial_path,
+                    'position_idx': position_idx
+                })
+            path_segments.append(segments)
+        
+        # Calculate metrics for each interval
+        for interval_idx in range(total_intervals):
+            # Get partial paths up to this interval
+            partial_paths = []
+            positions = []
+            
+            for drone_idx, segments in enumerate(path_segments):
+                if interval_idx < len(segments):
+                    partial_paths.append(segments[interval_idx]['partial_path'])
+                    positions.append(segments[interval_idx]['position'])
+                else:
+                    # Use the last available segment
+                    partial_paths.append(segments[-1]['partial_path'])
+                    positions.append(segments[-1]['position'])
+            
+            # Calculate metrics for this interval
+            try:
+                metrics_result = self.calculate_all_metrics(partial_paths, discount_factor)
+                interval_metrics.append({
+                    'area_covered': metrics_result.get('area_covered', 0),
+                    'likelihood_score': metrics_result.get('total_likelihood_score', 0),
+                    'victims_found_pct': metrics_result.get('victim_detection_metrics', {}).get('percentage_found', 0),
+                    'total_path_length': metrics_result.get('total_path_length', 0),
+                    'time_discounted_score': metrics_result.get('total_time_discounted_score', 0)
+                })
+            except Exception as e:
+                # Use previous metrics or defaults if calculation fails
+                if interval_metrics:
+                    interval_metrics.append(interval_metrics[-1].copy())
+                else:
+                    interval_metrics.append({
+                        'area_covered': 0, 'likelihood_score': 0, 'victims_found_pct': 0,
+                        'total_path_length': 0, 'time_discounted_score': 0
+                    })
+            
+            # Use average distance across all drones for this interval
+            avg_distance = sum(path_segments[i][min(interval_idx, len(path_segments[i])-1)]['distance'] 
+                             for i in range(len(path_segments))) / len(path_segments)
+            interval_distances.append(avg_distance)
+            interval_position_list.append(positions)
+        
+        return {
+            'interval_metrics': interval_metrics,
+            'interval_distances': interval_distances,
+            'interval_positions': interval_position_list,
+            'total_intervals': total_intervals,
+            'interval_positions_step': interval_positions
+        }
