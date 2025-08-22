@@ -1,6 +1,6 @@
 # sarenv/utils/plot.py
 """
-Collection of visualization functions for SARenv data.
+Collection of visualization functions for SAREnv data.
 """
 import os
 from pathlib import Path

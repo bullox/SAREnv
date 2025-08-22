@@ -1,5 +1,6 @@
 # Content of graphs directory
 graphs/
+coverage_videos/
 
 # Editors
 .vscode/
@@ -19,6 +20,8 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 *$py.class
+*.pdf
+*.html
 
 # C extensions
 *.so

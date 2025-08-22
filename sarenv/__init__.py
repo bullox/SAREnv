@@ -1,6 +1,6 @@
 # sarenv/__init__.py
 """
-SARenv: A Python toolkit for generating, loading, and evaluating
+SAREnv: A Python toolkit for generating, loading, and evaluating
 Search and Rescue environment data.
 """
 from .analytics.evaluator import ComparativeEvaluator

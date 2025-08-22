@@ -1,14 +1,14 @@
-# SARenv: UAV Search and Rescue Dataset and Evaluation Framework
+# SAREnv: UAV Search and Rescue Dataset and Evaluation Framework
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-0.1.7-green.svg)](https://github.com/your-repo/sarenv)
 
-SARenv is an open-access dataset and evaluation framework designed to support research in UAV-based search and rescue (SAR) algorithms. This toolkit addresses the critical need for standardized datasets and benchmarks in wilderness SAR operations, enabling systematic evaluation and comparison of algorithmic approaches including coverage path planning, probabilistic search, and information-theoretic exploration.
+SAREnv is an open-access dataset and evaluation framework designed to support research in UAV-based search and rescue (SAR) algorithms. This toolkit addresses the critical need for standardized datasets and benchmarks in wilderness SAR operations, enabling systematic evaluation and comparison of algorithmic approaches including coverage path planning, probabilistic search, and information-theoretic exploration.
 
 ## 🎯 Project Goals
 
-Unmanned Aerial Vehicles (UAVs) play an increasingly vital role in wilderness search and rescue operations by enhancing situational awareness and extending the reach of human teams. However, the absence of standardized datasets and benchmarks has hindered systematic evaluation and comparison of UAV-based SAR algorithms. SARenv bridges this gap by providing:
+Unmanned Aerial Vehicles (UAVs) play an increasingly vital role in wilderness search and rescue operations by enhancing situational awareness and extending the reach of human teams. However, the absence of standardized datasets and benchmarks has hindered systematic evaluation and comparison of UAV-based SAR algorithms. SAREnv bridges this gap by providing:
 
 - **Realistic geospatial scenarios** across diverse terrain types
 - **Synthetic victim locations** derived from statistical models of lost person behavior
@@ -171,9 +171,12 @@ sarenv/
 │       ├── plot.py            # Visualization tools
 │       └── lost_person_behavior.py  # Behavioral models
 ├── examples/                   # Usage examples
+│   ├── 01_generate_sar_data.py
 │   ├── 02_load_and_visualize.py
 │   ├── 03_generate_survivors.py
-│   └── 04_evaluate_coverage_paths.py
+│   ├── 04_evaluate_coverage_paths.py
+│   ├── 05_evaluate_all_datasets.py
+│   └── 06_generate_comparative_coverage_video.py
 ├── data/                       # Data processing scripts
 └── sarenv_dataset/            # Generated datasets (created after running)
 ```
@@ -264,7 +267,7 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 ## 📝 Citation
 
-If you use SARenv in your research, please cite:
+If you use SAREnv in your research, please cite:
 
 ```bibtex
 @article{sarenv2024,
