@@ -153,6 +153,110 @@ results = evaluator.run_baseline_evaluations()
 evaluator.plot_results(results)
 ```
 
+## 📁 Example Scripts
+
+The `examples/` directory contains comprehensive scripts demonstrating different aspects of the SAREnv framework. Here's how to use each one:
+
+### `01_generate_sar_data.py`
+
+**Purpose**: Generate custom SAR datasets for specific geographic regions  
+**Usage**: Demonstrates how to create datasets from custom polygon areas using real geospatial data
+
+```bash
+python examples/01_generate_sar_data.py
+```
+
+- Creates datasets for custom geographic polygons
+- Downloads and processes OpenStreetMap features
+- Generates probability heatmaps for lost person locations
+- Exports multi-scale environments (small to extra-large)
+
+### `02_load_and_visualize.py`
+
+**Purpose**: Load existing datasets and create visualizations  
+**Usage**: Shows how to load pre-generated datasets and create publication-quality plots
+
+```bash
+python examples/02_load_and_visualize.py
+```
+
+- Loads datasets from the `sarenv_dataset/` directory
+- Creates heatmap visualizations with probability distributions
+- Generates feature maps showing terrain, roads, water bodies, and vegetation
+- Supports both basemap overlays and standalone visualizations
+
+### `03_generate_survivors.py`
+
+**Purpose**: Generate realistic lost person locations  
+**Usage**: Demonstrates statistical modeling of victim locations based on terrain features
+
+```bash
+python examples/03_generate_survivors.py
+```
+
+- Uses research-based behavioral models for lost person distributions
+- Generates probabilistic victim locations considering terrain types
+- Creates visualizations showing victim locations overlaid on terrain features
+- Supports configurable numbers of victims for different scenario sizes
+
+### `04_evaluate_coverage_paths.py`
+
+**Purpose**: Evaluate and compare path planning algorithms  
+**Usage**: Run comparative analysis of built-in search algorithms on a single dataset
+
+```bash
+python examples/04_evaluate_coverage_paths.py
+```
+
+- Compares Spiral, Concentric, Pizza, and Greedy search algorithms
+- Calculates comprehensive performance metrics (coverage, likelihood, detection rates)
+- Generates comparison plots and performance charts
+- Supports multi-drone scenarios with configurable team sizes
+
+### `05_evaluate_all_datasets.py`
+
+**Purpose**: Large-scale evaluation across multiple datasets  
+**Usage**: Systematic evaluation framework for algorithm benchmarking across many scenarios
+
+```bash
+python examples/05_evaluate_all_datasets.py --budget 300000 --num_drones 5
+```
+
+- Evaluates algorithms across multiple geographic regions (datasets 1-60)
+- Provides statistical significance testing across diverse scenarios
+- Generates comprehensive CSV results for further analysis
+- Supports custom algorithm integration for research purposes
+- Command-line arguments for budget and drone configuration
+
+### `06_generate_comparative_coverage_video.py`
+
+**Purpose**: Create animated videos showing algorithm performance  
+**Usage**: Generate dynamic visualizations comparing multiple algorithms in real-time
+
+```bash
+python examples/06_generate_comparative_coverage_video.py
+```
+
+- Creates MP4 videos showing 4 algorithms side-by-side in 2×2 grid layout
+- Real-time visualization of drone movement and path building
+- Dynamic metrics graphs showing performance evolution over time
+- Configurable video quality and frame rates for different use cases
+- Efficient parallel processing for faster video generation
+
+### Running Examples
+
+Each script can be run independently after installing SAREnv:
+
+```bash
+# Make sure you're in the project directory
+cd SAREnv
+
+# Run any example script
+python examples/[script_name].py
+```
+
+**Note**: Scripts 02-06 require existing datasets. Either download the pre-generated datasets using Git LFS or run script 01 to generate custom datasets first.
+
 ## 📁 Repository Structure
 
 ```text

@@ -12,7 +12,10 @@ Features:
 - Real-time metrics visualization
 
 Usage:
-    python 06_generate_comparative_coverage_video.py
+    python     # Distance in meters between metric calculations (determines video granularity and performance)
+    # Lower values = higher video quality but longer computation time
+    # Recommended: 1000-2500m for good balance between quality and performance
+    interval_distance = 2500.0  # Increased for faster testingenerate_comparative_coverage_video.py
 """
 
 import time
@@ -24,6 +27,9 @@ import matplotlib.pyplot as plt
 import geopandas as gpd
 from shapely.geometry import Point
 import cv2
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
+import pickle
 
 import sarenv
 from sarenv.analytics import metrics
@@ -31,6 +37,43 @@ from sarenv.analytics.evaluator import ComparativeEvaluator
 from sarenv.utils.plot import setup_algorithm_plot, plot_drone_paths, plot_current_drone_positions, create_time_series_graphs
 
 log = sarenv.get_logger()
+
+
+def compute_algorithm_metrics(args):
+    """
+    Helper function for parallel computation of algorithm metrics.
+    This function is designed to work with multiprocessing.
+    """
+    alg_name, paths, path_evaluator_data, interval_distance = args
+    
+    try:
+        # Reconstruct path_evaluator from serialized data
+        path_evaluator = metrics.PathEvaluator(
+            path_evaluator_data['heatmap'],
+            path_evaluator_data['bounds'],  # This becomes 'extent' in PathEvaluator
+            path_evaluator_data['victims_gdf'],
+            path_evaluator_data['fov_degrees'],
+            path_evaluator_data['altitude_meters'],
+            path_evaluator_data['meter_per_bin']
+        )
+        
+        log.info(f"Computing metrics for {alg_name} with {len(paths)} paths...")
+        
+        # Use the configured interval distance
+        precomputed_data = path_evaluator.calculate_metrics_at_distance_intervals(
+            paths, discount_factor=0.999, interval_distance=interval_distance
+        )
+        
+        if not precomputed_data.get('interval_metrics'):
+            log.warning(f"No precomputed metrics available for {alg_name}")
+            return alg_name, None
+            
+        log.info(f"Successfully computed metrics for {alg_name}")
+        return alg_name, precomputed_data
+        
+    except Exception as e:
+        log.error(f"Error computing metrics for {alg_name}: {e}")
+        return alg_name, None
 
 
 class ComparativeCoverageVideoGenerator:
@@ -44,11 +87,16 @@ class ComparativeCoverageVideoGenerator:
         self.output_dir = Path(output_dir)
         self.interval_distance = interval_distance  # Distance in meters between calculations
         
+        # Store evaluator configuration for serialization
+        self.evaluator_config = None  # Will be set later if needed
+        
         # Video settings
-        self.fps = 2  # Frames per second
+        self.display_fps = 24  # Smooth visual display at 24fps
+        self.metrics_fps = 4   # Metrics calculated at 4fps intervals
         self.dpi = 100
         self.figsize = (20, 12)  # Large figure for 2x2 + graphs
         self.n_frames = None  # Will be determined by the path lengths and interval distance
+        self.metrics_frames = None  # Number of frames where metrics are actually calculated
         
         # Define colors for multiple drones
         self.drone_colors = ['blue', 'green', 'gray', 'purple', 'orange']
@@ -61,23 +109,75 @@ class ComparativeCoverageVideoGenerator:
             'Pizza': 'red'
         }
     
+    def set_evaluator_config(self, evaluator_config):
+        """Set the evaluator configuration for serialization purposes."""
+        self.evaluator_config = evaluator_config
+    
     def create_comparative_video(self, algorithms_data):
         """Create a comparative video showing all algorithms side by side."""
         log.info("Creating comparative coverage video...")
         
-        # Prepare animation data for all algorithms using efficient method
-        all_animation_data = {}
+        # Prepare serializable path_evaluator data for multiprocessing
+        # Use the original constructor parameters
+        path_evaluator_data = {
+            'heatmap': self.item.heatmap,
+            'bounds': self.item.bounds,  # This becomes 'extent' in PathEvaluator
+            'victims_gdf': self.victims_gdf,
+            'fov_degrees': self.evaluator_config['fov_degrees'] if self.evaluator_config else 45.0,
+            'altitude_meters': self.evaluator_config['altitude_meters'] if self.evaluator_config else 100.0,
+            'meter_per_bin': self.evaluator_config['meter_per_bin'] if self.evaluator_config else 30
+        }
+        
+        # Prepare arguments for parallel processing
+        parallel_args = []
+        target_algorithms = []
         
         for alg_name, paths in algorithms_data.items():
             if alg_name in self.algorithm_colors:  # Only process target algorithms
-                log.info(f"Preparing animation data for {alg_name}...")
-                animation_data = self._prepare_animation_data(paths, alg_name)
+                parallel_args.append((alg_name, paths, path_evaluator_data, self.interval_distance))
+                target_algorithms.append(alg_name)
+        
+        if not parallel_args:
+            log.error("No target algorithms found for processing")
+            return
+        
+        # Compute metrics in parallel using all available cores
+        num_workers = min(len(parallel_args), mp.cpu_count())
+        log.info(f"Computing metrics for {len(parallel_args)} algorithms in parallel using {num_workers} cores out of {mp.cpu_count()} available...")
+        all_animation_data = {}
+        
+        start_time = time.time()
+        
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all tasks
+            future_to_alg = {executor.submit(compute_algorithm_metrics, args): args[0] 
+                           for args in parallel_args}
+            
+            # Collect results as they complete
+            completed_count = 0
+            for future in as_completed(future_to_alg):
+                alg_name = future_to_alg[future]
+                completed_count += 1
+                try:
+                    result_alg_name, precomputed_data = future.result()
                     
-                if animation_data['num_drones'] > 0:  # Only add if we have valid data
-                    all_animation_data[alg_name] = animation_data
-                    log.info(f"Prepared animation data for {alg_name} with {len(animation_data['positions'])} frames.")
-                else:
-                    log.warning(f"Skipping {alg_name} - no valid animation data")
+                    if precomputed_data is not None:
+                        log.info(f"[{completed_count}/{len(parallel_args)}] Processing animation data for {result_alg_name}...")
+                        animation_data = self._process_precomputed_data(precomputed_data, result_alg_name)
+                        
+                        if animation_data['num_drones'] > 0:
+                            all_animation_data[result_alg_name] = animation_data
+                            log.info(f"✓ Prepared animation data for {result_alg_name} with {len(animation_data['positions'])} frames.")
+                        else:
+                            log.warning(f"✗ Skipping {result_alg_name} - no valid animation data")
+                    else:
+                        log.warning(f"✗ No valid metrics computed for {result_alg_name}")
+                        
+                except Exception as e:
+                    log.error(f"✗ Error processing results for {alg_name}: {e}")
+        
+        parallel_time = time.time() - start_time
+        log.info(f"Parallel metrics computation completed in {parallel_time:.2f} seconds using {num_workers} cores")
         
         if not all_animation_data:
             log.error("No valid animation data found for any algorithm")
@@ -92,7 +192,7 @@ class ComparativeCoverageVideoGenerator:
         frame_width = int(self.figsize[0] * self.dpi)
         frame_height = int(self.figsize[1] * self.dpi)
         
-        video_writer = cv2.VideoWriter(str(output_file), fourcc, self.fps, (frame_width, frame_height))
+        video_writer = cv2.VideoWriter(str(output_file), fourcc, self.display_fps, (frame_width, frame_height))
         if not video_writer.isOpened():
             log.error(f"Failed to open video writer for {output_file}")
             return
@@ -100,17 +200,25 @@ class ComparativeCoverageVideoGenerator:
         log.info(f"Video writer initialized: {output_file}")
         
         try:
-            # Determine total frames
-            max_frames = max(len(data['positions']) for data in all_animation_data.values())
-            total_frames = min(self.n_frames, max_frames)
+            # Determine total frames based on metrics intervals - create multiple frames per interval for smoothness
+            max_metrics_frames = max(len(data['positions']) for data in all_animation_data.values())
+            base_frames = min(self.n_frames, max_metrics_frames) if self.n_frames else max_metrics_frames
+            
+            # Create multiple frames per metric interval for smoother video
+            frames_per_interval = max(1, int(self.display_fps / self.metrics_fps))  # 6 frames per interval for 24fps
+            total_frames = base_frames * frames_per_interval
+
+            log.info(f"Generating {total_frames} total frames ({base_frames} metric intervals × {frames_per_interval} frames per interval)")
 
             # Generate each frame
             for frame_idx in range(total_frames):
-                if frame_idx % 10 == 0:  # More frequent progress updates
-                    log.info(f"Generating frame {frame_idx + 1}/{total_frames}... ({100*frame_idx/total_frames:.1f}%)")
+                if frame_idx % (frames_per_interval * 5) == 0:  # Progress updates every 5 intervals
+                    progress = 100 * frame_idx / total_frames
+                    interval_idx = frame_idx // frames_per_interval
+                    log.info(f"Generating frame {frame_idx + 1}/{total_frames} (interval {interval_idx})... ({progress:.1f}%)")
                     
                 try:
-                    frame = self._create_video_frame(frame_idx, all_animation_data)
+                    frame = self._create_video_frame(frame_idx, all_animation_data, frames_per_interval)
                     if frame is not None:
                         video_writer.write(frame)
                     else:
@@ -130,8 +238,8 @@ class ComparativeCoverageVideoGenerator:
         else:
             log.error("Failed to save video file")
     
-    def _create_video_frame(self, frame_idx, all_animation_data):
-        """Create a single video frame."""
+    def _create_video_frame(self, frame_idx, all_animation_data, frames_per_interval):
+        """Create a single video frame showing progressive path building and actual drone positions."""
         try:
             fig = plt.figure(figsize=self.figsize, dpi=self.dpi)
             gs = fig.add_gridspec(6, 6, width_ratios=[1,1,1,1,0.8,0.8], hspace=0.25, wspace=0.25)
@@ -153,7 +261,7 @@ class ComparativeCoverageVideoGenerator:
             ax_score = fig.add_subplot(gs[2:4, 4:])
             ax_victims = fig.add_subplot(gs[4:6, 4:])
             
-            self._create_comparative_frame(frame_idx, all_animation_data, algorithm_axes, ax_area, ax_score, ax_victims)
+            self._create_comparative_frame(frame_idx, all_animation_data, algorithm_axes, ax_area, ax_score, ax_victims, frames_per_interval)
             
             # Convert to video frame
             fig.canvas.draw()
@@ -169,46 +277,31 @@ class ComparativeCoverageVideoGenerator:
             log.error(f"Error creating video frame {frame_idx}: {e}")
             return None
         
-    def _prepare_animation_data(self, paths, algorithm_name):
-        """Prepare animation data using pre-computed metrics at intervals."""
+    def _process_precomputed_data(self, precomputed_data, algorithm_name):
+        """Process precomputed metrics data into animation data format."""
         start_time = time.time()
-        log.info(f"Preparing animation data for {algorithm_name} with {len(paths)} paths.")
-        
-        # Use the configured interval distance
-        log.info(f"Pre-computing metrics every {self.interval_distance}m...")
         
         try:
-            precomputed_data = self.path_evaluator.calculate_metrics_at_distance_intervals(
-                paths, discount_factor=0.999, interval_distance=self.interval_distance
-            )
-            
-            if not precomputed_data.get('interval_metrics'):
-                log.warning(f"No precomputed metrics available for {algorithm_name}")
-                return {'positions': [], 'drone_positions': [], 'path_coordinates': [], 'metrics': [], 'num_drones': 0}
-                
             # Extract data from precomputed results
             total_intervals = precomputed_data['total_intervals']
             interval_positions = precomputed_data['interval_positions']
             interval_metrics = precomputed_data['interval_metrics']
             interval_path_coordinates = precomputed_data.get('interval_path_coordinates', [])
             
+            # Set n_frames to match the total intervals (metrics calculations)
             self.n_frames = total_intervals
             log.info(f"Using {total_intervals} precomputed intervals for {self.n_frames} video frames")
             
-            # Map intervals to video frames
+            # Map intervals to video frames - no need for fps expansion since we use actual interval data
             all_positions = []
             all_drone_positions = []
             all_metrics = []
-            all_path_coordinates = []  # Store path coordinates for natural rendering
-            all_interval_distances = []  # Store the actual interval distances (2.5km steps)
+            all_path_coordinates = []
+            all_interval_distances = []
             
-            for frame_idx in range(self.n_frames):
-                # Map frame to interval (linear interpolation)
-                interval_idx = int((frame_idx / max(1, self.n_frames - 1)) * max(1, total_intervals - 1))
-                interval_idx = min(interval_idx, total_intervals - 1)
-                
-                # Store the actual interval distance (in km)
-                interval_distance_km = interval_idx * (self.interval_distance / 1000.0)  # Convert meters to km
+            for interval_idx in range(total_intervals):
+                # Store the interval distance (in km)
+                interval_distance_km = interval_idx * (self.interval_distance / 1000.0)
                 all_interval_distances.append(interval_distance_km)
                 
                 # Get positions for this interval
@@ -222,11 +315,12 @@ class ComparativeCoverageVideoGenerator:
                     all_positions.append(last_positions[0])
                     all_drone_positions.append(last_positions)
                 
-                # Get path coordinates for natural rendering
-                if interval_idx < len(interval_path_coordinates[0]) if interval_path_coordinates else False:
+                # Get path coordinates for progressive path rendering
+                if interval_path_coordinates and interval_idx < len(interval_path_coordinates[0]) if interval_path_coordinates else False:
                     frame_path_coords = []
                     for drone_idx in range(len(interval_path_coordinates)):
                         if interval_idx < len(interval_path_coordinates[drone_idx]):
+                            # Get the progressive path coordinates up to this interval
                             frame_path_coords.append(interval_path_coordinates[drone_idx][interval_idx])
                         else:
                             frame_path_coords.append(interval_path_coordinates[drone_idx][-1])
@@ -246,9 +340,30 @@ class ComparativeCoverageVideoGenerator:
                     all_metrics.append(interval_metrics[-1] if interval_metrics else 
                                      {'area_covered': 0, 'likelihood_score': 0, 'victims_found_pct': 0})
             
-            num_drones = len(paths) if paths else 0
+            # Determine number of drones from precomputed data
+            num_drones = len(interval_positions[0]) if interval_positions and interval_positions[0] else 0
+            
             total_time = time.time() - start_time
-            log.info(f"Finished animation data preparation for {algorithm_name} in {total_time:.2f} seconds.")
+            log.info(f"Finished processing animation data for {algorithm_name} in {total_time:.2f} seconds.")
+            
+            return {
+                'positions': all_positions,
+                'drone_positions': all_drone_positions,
+                'path_coordinates': all_path_coordinates,
+                'metrics': all_metrics,
+                'interval_distances': all_interval_distances,
+                'num_drones': num_drones
+            }
+            
+        except Exception as e:
+            log.error(f"Error processing animation data for {algorithm_name}: {e}")
+            return {'positions': [], 'drone_positions': [], 'path_coordinates': [], 'metrics': [], 'interval_distances': [], 'num_drones': 0}
+            
+            # Determine number of drones from precomputed data
+            num_drones = len(interval_positions[0]) if interval_positions and interval_positions[0] else 0
+            
+            total_time = time.time() - start_time
+            log.info(f"Finished processing animation data for {algorithm_name} in {total_time:.2f} seconds.")
             
             return {
                 'positions': all_positions,
@@ -260,32 +375,79 @@ class ComparativeCoverageVideoGenerator:
             }
             
         except Exception as e:
+            log.error(f"Error processing animation data for {algorithm_name}: {e}")
+            return {'positions': [], 'drone_positions': [], 'path_coordinates': [], 'metrics': [], 'interval_distances': [], 'num_drones': 0}
+
+    def _prepare_animation_data(self, paths, algorithm_name):
+        """Prepare animation data using pre-computed metrics at intervals (legacy method for single-threaded usage)."""
+        start_time = time.time()
+        log.info(f"Preparing animation data for {algorithm_name} with {len(paths)} paths.")
+        
+        # Use the configured interval distance
+        log.info(f"Pre-computing metrics every {self.interval_distance}m...")
+        
+        try:
+            precomputed_data = self.path_evaluator.calculate_metrics_at_distance_intervals(
+                paths, discount_factor=0.999, interval_distance=self.interval_distance
+            )
+            
+            if not precomputed_data.get('interval_metrics'):
+                log.warning(f"No precomputed metrics available for {algorithm_name}")
+                return {'positions': [], 'drone_positions': [], 'path_coordinates': [], 'metrics': [], 'num_drones': 0}
+            
+            return self._process_precomputed_data(precomputed_data, algorithm_name)
+            
+        except Exception as e:
             log.error(f"Error in animation data preparation for {algorithm_name}: {e}")
             return {'positions': [], 'drone_positions': [], 'path_coordinates': [], 'metrics': [], 'interval_distances': [], 'num_drones': 0}
 
     def _create_comparative_frame(self, frame_idx, all_animation_data, algorithm_axes, 
-                                  ax_area, ax_score, ax_victims):
-        """Create a single comparative frame with all algorithm visualizations."""
+                                  ax_area, ax_score, ax_victims, frames_per_interval):
+        """Create a single comparative frame with progressive path building and drone positions."""
         try:
+            # Calculate which metric interval this frame corresponds to
+            interval_idx = frame_idx // frames_per_interval
+            sub_frame_idx = frame_idx % frames_per_interval
+            
             # Plot each algorithm
             for alg_name, ax in algorithm_axes.items():
                 setup_algorithm_plot(ax, self.item, self.victims_gdf, self.crs, alg_name, self.algorithm_colors)
                 
                 if alg_name in all_animation_data:
                     animation_data = all_animation_data[alg_name]
-                    if frame_idx < len(animation_data['drone_positions']):
-                        current_drone_positions = animation_data['drone_positions'][frame_idx]
-                        
-                        # Plot drone paths and current positions using efficient method
-                        plot_drone_paths(ax, animation_data, frame_idx, self.drone_colors)
+                    
+                    # Get actual drone positions for this interval
+                    current_drone_positions = self._get_actual_frame_positions(animation_data, interval_idx)
+                    
+                    if current_drone_positions is not None:
+                        # Plot cumulative paths up to current interval using existing function
+                        plot_drone_paths(ax, animation_data, interval_idx, self.drone_colors)
                         plot_current_drone_positions(ax, current_drone_positions, self.drone_colors, self.path_evaluator.detection_radius)
 
-            # Create time-series graphs
-            create_time_series_graphs(frame_idx, all_animation_data, ax_area, ax_score, ax_victims, 
+            # Update time-series graphs for all sub-frames to avoid empty plots
+            create_time_series_graphs(interval_idx, all_animation_data, ax_area, ax_score, ax_victims, 
                                     self.algorithm_colors, self.interval_distance / 1000.0)
             
         except Exception as e:
             log.warning(f"Error creating comparative frame {frame_idx}: {e}")
+
+    def _get_actual_frame_positions(self, animation_data, frame_idx):
+        """Get actual drone positions for the current frame from precomputed data."""
+        try:
+            drone_positions = animation_data.get('drone_positions', [])
+            
+            # Direct frame mapping - each frame corresponds to a metric interval
+            if frame_idx < len(drone_positions):
+                return drone_positions[frame_idx]
+            elif drone_positions:
+                # If we exceed the data, use the last available positions
+                return drone_positions[-1]
+            else:
+                return None
+            
+        except Exception as e:
+            log.warning(f"Error getting actual frame positions for frame {frame_idx}: {e}")
+            return None
 
 
 
@@ -295,7 +457,10 @@ if __name__ == "__main__":
     # Configuration
     data_dir = "sarenv_dataset/19"
     output_dir = Path("coverage_videos")
-    interval_distance = 1000.0  # Distance in meters between metric calculations (determines video granularity)
+    # Distance in meters between metric calculations (determines video granularity and performance)
+    # Lower values = higher video quality but longer computation time
+    # Recommended: 1000-2500m for good balance between quality and performance
+    interval_distance = 250.0
     
     try:
         # Initialize evaluator
@@ -365,12 +530,19 @@ if __name__ == "__main__":
             log.error("No algorithm data was generated successfully")
             exit(1)
         
-        # Create video generator and generate video
+        # Create video generator and configure it
         log.info("Creating video generator...")
         video_generator = ComparativeCoverageVideoGenerator(
             item, victims_gdf, path_evaluator, env_data["crs"], output_dir, 
             interval_distance=interval_distance
         )
+        
+        # Set evaluator configuration for serialization
+        video_generator.set_evaluator_config({
+            'fov_degrees': evaluator.path_generator_config.fov_degrees,
+            'altitude_meters': evaluator.path_generator_config.altitude_meters,
+            'meter_per_bin': evaluator.loader._meter_per_bin
+        })
         
         log.info("Generating comparative coverage video...")
         video_generator.create_comparative_video(algorithms_data)
