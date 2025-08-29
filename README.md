@@ -301,26 +301,6 @@ sarenv/
 - **Temporal Dynamics**: Time-sensitive victim detection modeling
 - **Resource Utilization**: Multi-drone coordination effectiveness
 
-## 📊 Dataset Specifications
-
-### Environment Scales
-
-| Size    | Radius (km) | Area (km²) | Use Case |
-|---------|-------------|------------|----------|
-| Small   | 1.0         | ~3.14      | Algorithm development |
-| Medium  | 2.0         | ~12.57     | Comparative testing |
-| Large   | 4.0         | ~50.27     | Realistic scenarios |
-| XLarge  | 8.0         | ~201.06    | Challenging benchmarks |
-
-### Terrain Types
-
-- **Flat Environments**: Plains, fields, minimal elevation variation
-- **Mountainous Environments**: Hills, valleys, significant elevation changes
-
-### Climate Conditions
-
-- **Temperate**: Moderate conditions, mixed vegetation
-- **Dry**: Arid conditions, sparse vegetation patterns
 
 ## 🛠️ Custom Algorithm Integration
 
@@ -350,36 +330,16 @@ evaluator = sarenv.ComparativeEvaluator()
 evaluator.path_generators['custom'] = custom_search_algorithm
 ```
 
-## 📈 Performance Metrics
-
-The framework provides comprehensive metrics for algorithm evaluation:
-
-- **Total Likelihood Score**: Probability-weighted coverage assessment
-- **Time-Discounted Score**: Temporal efficiency with decay factors
-- **Victim Detection Rate**: Percentage of victims found
-- **Average Detection Distance**: Mean travel distance to victim discovery
-- **Coverage Efficiency**: Area covered per unit time/distance
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details on:
-
-- Adding new path planning algorithms
-- Extending evaluation metrics
-- Improving dataset generation
-- Documentation and examples
-
 ## 📝 Citation
 
 If you use SAREnv in your research, please cite:
 
 ```bibtex
-@article{sarenv2024,
-  title={An Open-Access Dataset and Evaluation Framework for UAV-Based Search and Rescue Algorithms},
-  author={[Author Names]},
-  journal={[Journal Name]},
-  year={2024},
-  publisher={[Publisher]}
+@article{sarenv2025,
+  title={SAREnv: An Open-Source Dataset and Benchmark Tool for Informed Wilderness Search and Rescue using UAVs},
+  author={Kasper Andreas Rømer Grøntved, Alejandro Jarabo-Peñas, Sid Reid, Edouard George Alain Rolland, Matthew Watson, Arthur Richards, Steve Bullock, and Anders Lyhne Christensen},
+  journal={Drones},
+  year={2025}
 }
 ```
 
@@ -389,17 +349,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- Lost person behavior models based on research by Koester (2008)
-- Geospatial data provided by OpenStreetMap contributors
-- Built with Python geospatial libraries: GeoPandas, Shapely, Rasterio
+This work is supported by; the Innovation Fund Denmark for the DIREC project (9142-00001B), the Independent Research Fund Denmark under grant 10.46540/4264-00105B (the NAMUR project), and by the WildDrone MSCA Doctoral Network funded by EU Horizon Europe under grant agreement no. 101071224
 
-## 📞 Support
 
-- **Documentation**: [Link to documentation]
-- **Issues**: Please report bugs and feature requests via GitHub Issues
-- **Discussions**: Join our community discussions for questions and ideas
-- **Contact**: [Contact information]
-
----
-
-**Note**: This framework is designed for research purposes. For real-world SAR operations, please consult with professional search and rescue organizations and follow established protocols.
